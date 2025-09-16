@@ -1,27 +1,34 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+// api/generate.ts
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   try {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Use POST' });
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Use POST' });
+      return;
+    }
 
     const { prompt } = req.body || {};
-    if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+    if (!prompt) {
+      res.status(400).json({ error: 'Missing prompt' });
+      return;
+    }
 
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'Missing GEMINI_API_KEY' });
+    if (!apiKey) {
+      res.status(500).json({ error: 'Missing GEMINI_API_KEY' });
+      return;
+    }
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: MODEL });
 
-    // Force JSON output
+    // Force JSON from model
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json'
-      }
+      generationConfig: { responseMimeType: 'application/json' },
     });
 
     const text = result.response.text();
