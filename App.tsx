@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 import {
-  onAuthChange,
   getUserId,
+  onAuthChange,
   getUserProfile,
-  signOut,
   signInWithPassword,
   signUpWithPassword,
+  signOut,
   updateFullName,
 } from './auth';
+
 import { getDay, upsertDay, listMeals, addMeal, deleteMeal as deleteMealDb } from './data';
 
 import type { Day, Meal, MacroSet, AppView, MacroStatusType, Profile, Goal } from './types';
@@ -52,8 +53,6 @@ const App: React.FC = () => {
 
   // Auth & cloud sync state
   const [userId, setUserId] = useState<string | null>(null);
-  const [headerProfile, setHeaderProfile] = useState<{ email: string | null; full_name: string | null }>({ email: null, full_name: null });
-
   const [isLoadingCloud, setIsLoadingCloud] = useState(false);
 
   const [activeView, setActiveView] = useState<AppView>('today');
@@ -80,11 +79,7 @@ const App: React.FC = () => {
     let unsub = () => {};
     (async () => {
       setUserId(await getUserId());
-      setHeaderProfile(await getUserProfile());
-      unsub = onAuthChange(async (uid) => {
-        setUserId(uid);
-        setHeaderProfile(await getUserProfile());
-      });
+      unsub = onAuthChange(setUserId);
     })();
     return () => unsub();
   }, []);
@@ -134,47 +129,76 @@ const App: React.FC = () => {
     }
   }, [targets, days, todayDate, setDays]);
 
-  // Cloud: when user logs in, hydrate today's day + meals from Supabase
+  // ---------- Cloud hydrate (FIXED: avoid infinite loop) ----------
+  // Runs once per (userId, todayDate). Does NOT depend on `targets`.
   useEffect(() => {
-    (async () => {
-      if (!userId) return;
+    if (!userId) return;
+
+    let cancelled = false;
+    let ran = false;
+
+    const hydrate = async () => {
+      if (ran) return;
+      ran = true;
+
       setIsLoadingCloud(true);
       try {
-        // Load or bootstrap day
+        // 1) Load or create today's day
         const cloudDay = await getDay(userId, todayDate);
+
         if (!cloudDay) {
-          // create cloud row with our current targets
+          // create cloud row with current local targets (no setTargets here)
           await upsertDay(userId, todayDate, { targets });
-          // ensure local has an entry (already ensured above)
         } else {
           // hydrate local for today
-          setDays(prev => {
-            const others = prev.filter(d => d.date !== todayDate);
-            return [
-              ...others,
-              {
-                date: todayDate,
-                targets: cloudDay.targets,
-                workoutLogged: (cloudDay as any).workout_logged || '',
-                workoutKcal: (cloudDay as any).workout_kcal || 0,
-                swapSuggestions: (cloudDay as any).swap_suggestions || '',
-              },
-            ];
-          });
-          setTargets(cloudDay.targets); // keep saved targets in sync with cloud
+          if (!cancelled) {
+            setDays(prev => {
+              const others = prev.filter(d => d.date !== todayDate);
+              return [
+                ...others,
+                {
+                  date: todayDate,
+                  targets: cloudDay.targets,
+                  workoutLogged: (cloudDay as any).workout_logged || '',
+                  workoutKcal: (cloudDay as any).workout_kcal || 0,
+                  swapSuggestions: (cloudDay as any).swap_suggestions || '',
+                },
+              ];
+            });
+
+            // only update saved targets if they actually differ
+            const t = cloudDay.targets;
+            const same =
+              t.calories === targets.calories &&
+              t.protein === targets.protein &&
+              t.carbs === targets.carbs &&
+              t.fat === targets.fat;
+
+            if (!same) setTargets(t);
+          }
         }
 
-        // Load meals
+        // 2) Load meals
         const cloudMeals = await listMeals(userId, todayDate);
-        setMeals(prev => {
-          const others = prev.filter(m => m.date !== todayDate);
-          return [...others, ...cloudMeals];
-        });
+        if (!cancelled) {
+          setMeals(prev => {
+            const others = prev.filter(m => m.date !== todayDate);
+            return [...others, ...cloudMeals];
+          });
+        }
+      } catch (err) {
+        console.error('Hydration error:', err);
       } finally {
-        setIsLoadingCloud(false);
+        if (!cancelled) setIsLoadingCloud(false);
       }
-    })();
-  }, [userId, todayDate, setDays, setMeals, setTargets, targets]);
+    };
+
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+    // IMPORTANT: do NOT include `targets` here
+  }, [userId, todayDate, setDays, setMeals, setTargets]);
 
   const today = useMemo(() => days.find(d => d.date === todayDate), [days, todayDate]);
   const mealsToday = useMemo(() => meals.filter(m => m.date === todayDate), [meals, todayDate]);
@@ -345,14 +369,11 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col font-sans">
-      {/* Header with auth UI (name/email + edit + sign out, or sign in) */}
+      {/* Header with auth UI (name/email + edit + sign out, or sign in/up) */}
       <header className="bg-primary text-white shadow-md sticky top-0 z-20">
         <div className="container mx-auto max-w-2xl p-4 flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold">TyronesMacros</h1>
-          <AuthPanelMinimal
-            headerProfile={headerProfile}
-            onProfileReload={async () => setHeaderProfile(await getUserProfile())}
-          />
+          <AuthPanel />
         </div>
       </header>
 
@@ -425,7 +446,7 @@ const App: React.FC = () => {
               ? `Remove "${mealPendingDelete.mealType}: ${mealPendingDelete.mealSummary}" from today?`
               : 'Remove this meal from today?'}
           </p>
-          <div className="flex gap-3 justify-center">
+        <div className="flex gap-3 justify-center">
             <button
               type="button"
               onClick={() => {
@@ -508,7 +529,7 @@ const StatusIcon: React.FC<{ status: MacroStatusType }> = ({ status }) => {
   return <span title="Under">⬇️</span>;
 };
 
-// ---------- Today view (shows Today’s Target + quick Edit) ----------
+// ---------- Today view ----------
 const TodayView: React.FC<{
   today: Day | undefined;
   mealsToday: Meal[];
@@ -1147,12 +1168,52 @@ const WorkoutModal: React.FC<{
   );
 };
 
-// ---------- Auth panel (password-based, inline) ----------
-const AuthPanelMinimal: React.FC<{
-  headerProfile: { email: string | null; full_name: string | null };
-  onProfileReload: () => Promise<void>;
-}> = ({ headerProfile, onProfileReload }) => {
+const ICONS = {
+  home: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="hero" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+    </svg>
+  ),
+  calendar: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="hero" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
+  ),
+  cog: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="hero" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+      />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  ),
+};
+
+const NavButton: React.FC<{ label: string; icon: keyof typeof ICONS; active: boolean; onClick: () => void }> = ({
+  label,
+  icon,
+  active,
+  onClick,
+}) => (
+  <button
+    onClick={onClick}
+    className={`flex-1 flex flex-col items-center justify-center py-2 px-1 text-center text-sm transition-colors duration-200 ${
+      active ? 'text-primary' : 'text-gray-500 dark:text-gray-400 hover:text-primary'
+    }`}
+  >
+    {ICONS[icon]}
+    <span className="mt-1">{label}</span>
+  </button>
+);
+
+/** ---------- Auth header panel (password-based, no redirects) ---------- */
+const AuthPanel: React.FC = () => {
   const [uid, setUid] = useState<string | null>(null);
+  const [info, setInfo] = useState<{ email: string | null; full_name: string | null }>({ email: null, full_name: null });
+
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -1164,13 +1225,14 @@ const AuthPanelMinimal: React.FC<{
     let unsub = () => {};
     (async () => {
       setUid(await getUserId());
-      unsub = onAuthChange(async (userId) => {
-        setUid(userId);
-        await onProfileReload();
+      setInfo(await getUserProfile());
+      unsub = onAuthChange(async (newUid) => {
+        setUid(newUid);
+        setInfo(await getUserProfile());
       });
     })();
     return () => unsub();
-  }, [onProfileReload]);
+  }, []);
 
   const doSignIn = async () => {
     setPending(true);
@@ -1178,7 +1240,7 @@ const AuthPanelMinimal: React.FC<{
       await signInWithPassword(email.trim(), password);
       setEmail(''); setPassword('');
     } catch (e: any) {
-      alert(e.message);
+      alert(e.message || 'Sign in failed');
     } finally {
       setPending(false);
     }
@@ -1191,10 +1253,10 @@ const AuthPanelMinimal: React.FC<{
     try {
       await signUpWithPassword(email.trim(), password, fullName.trim());
       setEmail(''); setPassword(''); setFullName('');
-      setMode('signin');
+      setMode('signin'); // prompt sign in
       alert('Account created. Please sign in.');
     } catch (e: any) {
-      alert(e.message);
+      alert(e.message || 'Sign up failed');
     } finally {
       setPending(false);
     }
@@ -1205,11 +1267,11 @@ const AuthPanelMinimal: React.FC<{
     setPending(true);
     try {
       await updateFullName(fullName.trim());
-      await onProfileReload();
+      setInfo(await getUserProfile());
       setEditingName(false);
       alert('Name updated.');
     } catch (e: any) {
-      alert(e.message);
+      alert(e.message || 'Failed to update name');
     } finally {
       setPending(false);
     }
@@ -1231,10 +1293,7 @@ const AuthPanelMinimal: React.FC<{
                 Save
               </button>
               <button
-                onClick={() => {
-                  setEditingName(false);
-                  setFullName(headerProfile.full_name || '');
-                }}
+                onClick={() => { setEditingName(false); setFullName(info.full_name || ''); }}
                 className="bg-white/10 px-2 py-1 rounded"
               >
                 Cancel
@@ -1242,13 +1301,10 @@ const AuthPanelMinimal: React.FC<{
             </div>
           ) : (
             <>
-              <div className="font-semibold">{headerProfile.full_name || 'Unnamed User'}</div>
-              <div className="text-xs opacity-90">{headerProfile.email}</div>
+              <div className="font-semibold">{info.full_name || 'Unnamed User'}</div>
+              <div className="text-xs opacity-90">{info.email}</div>
               <button
-                onClick={() => {
-                  setFullName(headerProfile.full_name || '');
-                  setEditingName(true);
-                }}
+                onClick={() => { setFullName(info.full_name || ''); setEditingName(true); }}
                 className="ml-2 bg-white/20 px-2 py-1 rounded"
               >
                 Edit name
@@ -1263,6 +1319,7 @@ const AuthPanelMinimal: React.FC<{
     );
   }
 
+  // Signed out
   return (
     <div className="flex items-center gap-2">
       {mode === 'signin' ? (
@@ -1322,47 +1379,5 @@ const AuthPanelMinimal: React.FC<{
     </div>
   );
 };
-
-// ---------- Icons / Nav ----------
-const ICONS = {
-  home: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="hero" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-    </svg>
-  ),
-  calendar: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="hero" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-    </svg>
-  ),
-  cog: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="hero" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="2"
-        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-      />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-    </svg>
-  ),
-};
-
-const NavButton: React.FC<{ label: string; icon: keyof typeof ICONS; active: boolean; onClick: () => void }> = ({
-  label,
-  icon,
-  active,
-  onClick,
-}) => (
-  <button
-    onClick={onClick}
-    className={`flex-1 flex flex-col items-center justify-center py-2 px-1 text-center text-sm transition-colors duration-200 ${
-      active ? 'text-primary' : 'text-gray-500 dark:text-gray-400 hover:text-primary'
-    }`}
-  >
-    {ICONS[icon]}
-    <span className="mt-1">{label}</span>
-  </button>
-);
 
 export default App;
