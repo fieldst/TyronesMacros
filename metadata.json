@@ -1,0 +1,5 @@
+{
+  "name": "TyronesMacros",
+  "description": "A simple mobile app that tracks daily countdown macros (what’s left to hit targets) plus workouts. It provides meal logging, workout tracking, and AI-powered suggestions to help you meet your nutritional goals.",
+  "requestFramePermissions": []
+}
