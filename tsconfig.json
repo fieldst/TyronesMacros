@@ -11,9 +11,11 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
-    "allowJs": false,
-    "types": ["vite/client"]
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
-  "include": ["**/*.ts", "**/*.tsx", "env.d.ts"],
+  "include": ["src", "env.d.ts"],
   "exclude": ["node_modules", "dist"]
 }
