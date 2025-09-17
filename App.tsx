@@ -324,11 +324,12 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col font-sans">
       {/* Header */}
       <header className="bg-primary text-white shadow-md sticky top-0 z-20">
-        <div className="container mx-auto max-w-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold">TyronesMacros</h1>
-          <ResponsiveAuthPanel />
-        </div>
-      </header>
+  <div className="container mx-auto max-w-2xl p-4 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center justify-between gap-3">
+    <h1 className="text-2xl font-bold">TyronesMacros</h1>
+    <ResponsiveAuthPanel />
+  </div>
+</header>
+
 
       {/* Loading overlay */}
       {isLoadingCloud && (
