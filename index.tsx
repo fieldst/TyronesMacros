@@ -1,6 +1,18 @@
 // PWA: register service worker (vite-plugin-pwa)
 //import { registerSW } from 'virtual:pwa-register'
 //registerSW({ immediate: true })
+// PWA: register service worker with update prompt
+import { registerSW } from 'virtual:pwa-register'
+
+const updateSW = registerSW({
+  onNeedRefresh() {
+    const ok = confirm('A new version is available. Update now?')
+    if (ok) updateSW()
+  },
+  onOfflineReady() {
+    // console.log('Ready to work offline')
+  },
+})
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
