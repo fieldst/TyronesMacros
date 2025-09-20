@@ -1,5 +1,7 @@
 {
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/" }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "devCommand": "node scripts/vercel-dev.cjs",
+  "buildCommand": "vite build",
+  "outputDirectory": "dist"
 }

@@ -26,4 +26,6 @@ dist-ssr
 node_modules
 dist
 .env.local
+.env
 
+.vercel

@@ -1,13 +1,14 @@
 import { createClient } from '@supabase/supabase-js'
 
-// Get environment variables from Vite
+// Vite envs (make sure these are set)
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error(
-    'Missing Supabase env vars. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.'
+if (!supabaseUrl || !supabaseAnon) {
+  console.warn(
+    '[supabase] Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. ' +
+    'Auth will not work until these are configured.'
   )
 }
 
-export const supabase = createClient(supabaseUrl, supabaseKey)
+export const supabase = createClient(supabaseUrl!, supabaseAnon!)
