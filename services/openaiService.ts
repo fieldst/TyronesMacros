@@ -1,7 +1,6 @@
 // services/openaiService.ts
 import type { MacroSet, Profile, Goal } from '../types';
 
-const API_BASE = (import.meta as any).env?.VITE_API_BASE || '';
 const DEFAULT_MODEL = (import.meta as any).env?.VITE_OPENAI_MODEL || 'gpt-4o-mini';
 
 export type TargetOption = {
@@ -34,8 +33,7 @@ function extractFirstJson(text: string): any {
 
 async function callServer(body: any): Promise<string> {
   const model = getSelectedModel();
-  const base = (API_BASE || '').replace(/\/$/, '');
-  const url = `${base}/api/generate`;
+  const url = '/api/generate'; // always same-origin; Vite dev proxy handles 5173->3001 in dev
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 25_000);
@@ -53,7 +51,9 @@ async function callServer(body: any): Promise<string> {
       const limit = Number(res.headers.get('X-RateLimit-Limit') || 0);
       const remaining = Number(res.headers.get('X-RateLimit-Remaining') || 0);
       const reset = Number(res.headers.get('X-RateLimit-Reset') || 0);
-      window.dispatchEvent(new CustomEvent('rate-update', { detail: { limit, remaining, reset } }));
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('rate-update', { detail: { limit, remaining, reset } }));
+      }
     } catch {}
 
     // Always read as text first so we can debug raw responses
