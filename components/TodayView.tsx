@@ -56,6 +56,19 @@ export default function TodayView({
   // Local target override (updated when Targets tab saves)
   const [currentGoal, setCurrentGoal] = useState<MacroSet>(targets || { calories: 0, protein: 0, carbs: 0, fat: 0 });
 
+  // brief tag for banner chip (CUT / BULK / LEAN / RECOMP / MAINTAIN)
+  const [goalLabel, setGoalLabel] = useState<string | null>(() => (targets as any)?.label ?? null);
+
+  // Detect router type for the Edit link/handler
+  const [usesHash, setUsesHash] = useState<boolean>(true);
+  useEffect(() => {
+    try {
+      setUsesHash(typeof window !== 'undefined' && window.location.hash?.startsWith('#/'));
+    } catch {
+      setUsesHash(true);
+    }
+  }, []);
+
   // Live preview (debounced) while typing
   const [previewMeal, setPreviewMeal] = useState<MacroSet | null>(null);
   const [previewWorkoutKcal, setPreviewWorkoutKcal] = useState<number>(0);
@@ -85,26 +98,34 @@ export default function TodayView({
           .maybeSingle();
 
         if (day?.workout_kcal != null) setWorkoutKcal(day.workout_kcal as number);
+
+        // If your day.targets stores label/rationale, hydrate label:
+        if ((day as any)?.targets?.label) {
+          setGoalLabel((day as any).targets.label);
+        }
       }
       setLoading(false);
     })();
 
-    // Listen for Target saves from Targets tab
-    const off = eventBus.on<MacroSet>('targets:update', (payload) => {
+    // Listen for Target saves from Targets tab (includes label/rationale)
+    const off = eventBus.on<any>('targets:update', (payload) => {
       setCurrentGoal({
         calories: payload.calories ?? 0,
         protein:  payload.protein  ?? 0,
         carbs:    payload.carbs    ?? 0,
         fat:      payload.fat      ?? 0,
       });
+      if (payload.label) setGoalLabel(String(payload.label).toUpperCase());
     });
 
     return () => { off(); };
   }, []);
 
-  // Keep local currentGoal in sync if parent changes
+  // Keep local currentGoal / label in sync if parent changes
   useEffect(() => {
     setCurrentGoal(targets || { calories: 0, protein: 0, carbs: 0, fat: 0 });
+    const lbl = (targets as any)?.label;
+    if (lbl) setGoalLabel(String(lbl).toUpperCase());
   }, [targets]);
 
   // Totals from meals (consumed)
@@ -113,9 +134,9 @@ export default function TodayView({
       meals.reduce(
         (acc, m) => ({
           calories: acc.calories + (m.calories || 0),
-          protein: acc.protein + (m.protein || 0),
-          carbs: acc.carbs + (m.carbs || 0),
-          fat: acc.fat + (m.fat || 0),
+          protein:  acc.protein  + (m.protein  || 0),
+          carbs:    acc.carbs    + (m.carbs    || 0),
+          fat:      acc.fat      + (m.fat      || 0),
         }),
         { calories: 0, protein: 0, carbs: 0, fat: 0 }
       ),
@@ -138,9 +159,7 @@ export default function TodayView({
     onTotalsChange?.(totalsFromMeals);
   }, [totalsFromMeals, onTotalsChange]);
 
-  // Realistic calorie math:
-  // Allowance = Current Goal Target (base) + (workoutKcal + previewWorkoutKcal)
-  // Remaining = Allowance - (Food eaten + preview meal)
+  // Allowance / remaining math
   const baseTarget = currentGoal?.calories || 0;
   const exerciseAdded = (workoutKcal || 0) + (previewWorkoutKcal || 0);
   const dailyAllowance = baseTarget + exerciseAdded;
@@ -258,7 +277,7 @@ export default function TodayView({
             date: todayStr(),
             workout_logged: workoutText.trim(),
             workout_kcal: kcal,
-            targets: currentGoal || { calories: 0, protein: 0, carbs: 0, fat: 0 },
+            targets: { ...currentGoal, label: goalLabel || undefined },
           });
           if (error) throw error;
         }
@@ -283,11 +302,11 @@ export default function TodayView({
       const coaching = await getMealCoaching(m.meal_summary, profile, remainingBefore, currentGoal);
 
       const suggestionLines = (coaching?.suggestions || [])
-        .filter((s) => typeof s === 'string' && s.trim())
-        .map((s) => s.trim());
+        .filter((s: any) => typeof s === 'string' && s.trim())
+        .map((s: string) => s.trim());
 
       const altLines = (coaching?.better_alternatives || [])
-        .map((a) => (a && a.item && a.why ? `Try: ${a.item} — ${a.why}` : ''))
+        .map((a: any) => (a && a.item && a.why ? `Try: ${a.item} — ${a.why}` : ''))
         .filter(Boolean);
 
       const lines = [...suggestionLines, ...altLines];
@@ -324,136 +343,195 @@ export default function TodayView({
     setCoachOpen(true);
   }
 
+  // % helpers for mini progress bars
+  const pct = (num: number, den: number) => {
+    if (!den || den <= 0) return 0;
+    const v = Math.round((num / den) * 100);
+    return Math.max(0, Math.min(100, v));
+  };
+
+  const consumedPct = {
+    calories: pct(totalsWithPreview.calories, (currentGoal?.calories || 0) + (workoutKcal + previewWorkoutKcal)),
+    protein:  pct(totalsWithPreview.protein,  currentGoal?.protein || 0),
+    carbs:    pct(totalsWithPreview.carbs,    currentGoal?.carbs   || 0),
+    fat:      pct(totalsWithPreview.fat,      currentGoal?.fat     || 0),
+  };
+
+  // Robust navigation to Targets
+  function goToTargets(e?: React.MouseEvent) {
+    try { e?.preventDefault(); } catch {}
+    // Prefer hash routers if hash is in use
+    if (usesHash) {
+      try {
+        window.history.pushState({}, '', '#/targets');
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+        window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+        return;
+      } catch {}
+      try { window.location.hash = '#/targets'; return; } catch {}
+      try { window.location.href = '#/targets'; return; } catch {}
+    }
+    // Otherwise use path
+    try { window.location.assign('/targets'); return; } catch {}
+    try { window.location.href = '/targets'; } catch {}
+  }
+
   if (loading) return <div className="text-gray-900 dark:text-gray-100">Loading…</div>;
 
   return (
-    <div className="p-4 space-y-6">
-      {/* Summary cards */}
-      <div className="grid gap-3 sm:grid-cols-5">
-        <Stat label="Current Goal Target" value={baseTarget} />
-        <Stat label="Exercise added" value={exerciseAdded} />
-        <Stat label="Daily allowance" value={dailyAllowance} />
-        <Stat label="Food eaten" value={totalsWithPreview.calories} />
-        <Stat
-          label="Remaining"
-          value={remainingCalories}
-          emphasize
-          hint={remainingCalories < 0 ? 'Over target' : undefined}
-        />
-      </div>
-
-      {/* Meal input */}
-      <div className="rounded border border-gray-200 dark:border-gray-700 p-3 space-y-2 bg-white dark:bg-gray-800">
-        <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Log a meal</label>
-        <textarea
-          className="w-full border border-gray-200 dark:border-gray-700 rounded p-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
-          rows={3}
-          placeholder="e.g., 1 bowl oatmeal with milk and banana; 2 eggs scrambled in olive oil"
-          value={mealText}
-          onChange={(e) => setMealText(e.target.value)}
-        />
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={addMealFromEstimate}
-            disabled={busy || !mealText.trim()}
-            className="btn btn-primary disabled:opacity-60 bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900 rounded-xl px-3 py-1"
-          >
-            {busy ? 'Estimating…' : 'Estimate macros & add'}
-          </button>
-          <button
-            onClick={suggestSwap}
-            disabled={busy}
-            className="btn btn-ghost rounded-xl px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            type="button"
-          >
-            Quick swap for remaining
-          </button>
-          {swap && <div className="text-sm text-gray-700 dark:text-gray-200">• {swap}</div>}
-        </div>
-        {previewMeal && (
-          <div className="text-xs text-gray-600 dark:text-gray-300">
-            Preview impact: −{previewMeal.calories} kcal, −{previewMeal.protein}P, −{previewMeal.carbs}C, −{previewMeal.fat}F
+    // --- Centered, responsive shell ---
+    <div className="min-h-screen w-full px-4 py-6 flex justify-center">
+      <div className="w-full max-w-screen-sm sm:max-w-screen-md md:max-w-2xl lg:max-w-3xl space-y-6">
+        {/* Current Target banner (with brief label chip) */}
+        <div className="rounded-xl border bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 p-3 flex items-center justify-between">
+          <div className="text-sm text-gray-800 dark:text-gray-100">
+            <div className="font-semibold flex items-center gap-2">
+              Current Target
+              {goalLabel && (
+                <span className="px-2 py-0.5 rounded-md text-xs font-medium bg-purple-600 text-white">
+                  {String(goalLabel).toUpperCase()}
+                </span>
+              )}
+            </div>
+            <div>{(currentGoal?.calories || 0)} kcal • {(currentGoal?.protein || 0)}P / {(currentGoal?.carbs || 0)}C / {(currentGoal?.fat || 0)}F</div>
           </div>
-        )}
-      </div>
-
-      {/* Workout input */}
-      <div className="rounded border border-gray-200 dark:border-gray-700 p-3 space-y-2 bg-white dark:bg-gray-800">
-        <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Log today’s workout</label>
-        <input
-          className="w-full border border-gray-200 dark:border-gray-700 rounded p-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
-          placeholder="e.g., 30 min brisk walk; or 45 min weight training moderate"
-          value={workoutText}
-          onChange={(e) => setWorkoutText(e.target.value)}
-        />
-        <div className="flex items-center gap-2">
-          <button
-            onClick={addWorkout}
-            disabled={busy || !workoutText.trim()}
-            className="btn btn-primary disabled:opacity-60 bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900 rounded-xl px-3 py-1"
+          {/* Button behaves like a link but forces SPA nav */}
+          <a
+            href={usesHash ? '#/targets' : '/targets'}
+            onClick={goToTargets}
+            className="px-3 py-1.5 rounded-lg bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900 text-sm"
           >
-            {busy ? 'Estimating…' : 'Estimate burn & save'}
-          </button>
-          {(workoutKcal > 0 || previewWorkoutKcal > 0) && (
-            <div className="text-sm text-gray-700 dark:text-gray-200">
-              {previewWorkoutKcal > 0 ? `Preview: +${previewWorkoutKcal} kcal` : `Saved: +${workoutKcal} kcal to allowance`}
+            Edit
+          </a>
+        </div>
+
+        {/* Summary cards */}
+        <div className="grid gap-3 sm:grid-cols-5">
+          <Stat label="Current Goal Target" value={currentGoal?.calories || 0} />
+          <Stat label="Exercise added" value={(workoutKcal || 0) + (previewWorkoutKcal || 0)} />
+          <Stat label="Daily allowance" value={baseTarget + (workoutKcal || 0) + (previewWorkoutKcal || 0)} />
+          <Stat label="Food eaten" value={totalsWithPreview.calories} />
+          <Stat
+            label="Remaining"
+            value={remainingCalories}
+            emphasize
+            hint={remainingCalories < 0 ? 'Over target' : undefined}
+          />
+        </div>
+
+        {/* Macro progress mini-gauges (simple bars) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Bar label="Calories used" pct={consumedPct.calories} remaining={remainingCalories} unit="kcal" />
+          <Bar label="Protein used"  pct={consumedPct.protein}  remaining={remainingProtein}  unit="g" />
+          <Bar label="Carbs used"    pct={consumedPct.carbs}    remaining={remainingCarbs}    unit="g" />
+          <Bar label="Fat used"      pct={consumedPct.fat}      remaining={remainingFat}      unit="g" />
+        </div>
+
+        {/* Meal input */}
+        <div className="rounded border border-gray-200 dark:border-gray-700 p-3 space-y-2 bg-white dark:bg-gray-800">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Log a meal</label>
+          <textarea
+            className="w-full border border-gray-200 dark:border-gray-700 rounded p-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
+            rows={3}
+            placeholder="e.g., 1 bowl oatmeal with milk and banana; 2 eggs scrambled in olive oil"
+            value={mealText}
+            onChange={(e) => setMealText(e.target.value)}
+          />
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={addMealFromEstimate}
+              disabled={busy || !mealText.trim()}
+              className="btn btn-primary disabled:opacity-60 bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900 rounded-xl px-3 py-1"
+            >
+              {busy ? 'Estimating…' : 'Estimate macros & add'}
+            </button>
+            <button
+              onClick={suggestSwap}
+              disabled={busy}
+              className="btn btn-ghost rounded-xl px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              type="button"
+            >
+              Quick swap for remaining
+            </button>
+            {swap && <div className="text-sm text-gray-700 dark:text-gray-200">• {swap}</div>}
+          </div>
+          {previewMeal && (
+            <div className="text-xs text-gray-600 dark:text-gray-300">
+              Preview impact: −{previewMeal.calories} kcal, −{previewMeal.protein}P, −{previewMeal.carbs}C, −{previewMeal.fat}F
             </div>
           )}
         </div>
-      </div>
 
-      {/* Meals table */}
-      <div className="rounded border border-gray-200 dark:border-gray-700 overflow-x-auto bg-white dark:bg-gray-800">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="bg-gray-100 dark:bg-gray-700 text-left text-gray-900 dark:text-gray-100">
-              <th className="p-2">Meal</th>
-              <th className="p-2">Cal</th>
-              <th className="p-2">P</th>
-              <th className="p-2">C</th>
-              <th className="p-2">F</th>
-              <th className="p-2"></th>
-            </tr>
-          </thead>
-          <tbody className="text-gray-900 dark:text-gray-100">
-            {meals.map((m) => (
-              <tr key={m.id} className="border-t border-gray-200 dark:border-gray-700">
-                <td className="p-2 align-top">{m.meal_summary}</td>
-                <td className="p-2">{m.calories}</td>
-                <td className="p-2">{m.protein}</td>
-                <td className="p-2">{m.carbs}</td>
-                <td className="p-2">{m.fat}</td>
-                <td className="p-2 flex gap-2">
-                  <button className="btn btn-ghost px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100" onClick={() => coachMealRow(m)}>Coach</button>
-                  <button className="btn btn-danger px-2 py-1 rounded-lg bg-red-600 text-white dark:bg-red-500" onClick={() => removeMeal(m.id)}>Remove</button>
-                </td>
+        {/* Workout input */}
+        <div className="rounded border border-gray-200 dark:border-gray-700 p-3 space-y-2 bg-white dark:bg-gray-800">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Log today’s workout</label>
+          <input
+            className="w-full border border-gray-200 dark:border-gray-700 rounded p-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
+            placeholder="e.g., 30 min brisk walk; or 45 min weight training moderate"
+            value={workoutText}
+            onChange={(e) => setWorkoutText(e.target.value)}
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={addWorkout}
+              disabled={busy || !workoutText.trim()}
+              className="btn btn-primary disabled:opacity-60 bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900 rounded-xl px-3 py-1"
+            >
+              {busy ? 'Estimating…' : 'Estimate burn & save'}
+            </button>
+            {(workoutKcal > 0 || previewWorkoutKcal > 0) && (
+              <div className="text-sm text-gray-700 dark:text-gray-200">
+                {previewWorkoutKcal > 0 ? `Preview: +${previewWorkoutKcal} kcal` : `Saved: +${workoutKcal} kcal to allowance`}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Meals table */}
+        <div className="rounded border border-gray-200 dark:border-gray-700 overflow-x-auto bg-white dark:bg-gray-800">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-gray-100 dark:bg-gray-700 text-left text-gray-900 dark:text-gray-100">
+                <th className="p-2">Meal</th>
+                <th className="p-2">Cal</th>
+                <th className="p-2">P</th>
+                <th className="p-2">C</th>
+                <th className="p-2">F</th>
+                <th className="p-2"></th>
               </tr>
-            ))}
+            </thead>
+            <tbody className="text-gray-900 dark:text-gray-100">
+              {meals.map((m) => (
+                <tr key={m.id} className="border-t border-gray-200 dark:border-gray-700">
+                  <td className="p-2 align-top">{m.meal_summary}</td>
+                  <td className="p-2">{m.calories}</td>
+                  <td className="p-2">{m.protein}</td>
+                  <td className="p-2">{m.carbs}</td>
+                  <td className="p-2">{m.fat}</td>
+                  <td className="p-2 flex gap-2">
+                    <button className="btn btn-ghost px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100" onClick={() => coachMealRow(m)}>Coach</button>
+                    <button className="btn btn-danger px-2 py-1 rounded-lg bg-red-600 text-white dark:bg-red-500" onClick={() => removeMeal(m.id)}>Remove</button>
+                  </td>
+                </tr>
+              ))}
 
-            {/* Totals row */}
-            <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 font-semibold text-gray-900 dark:text-white">
-              <td className="p-2">Totals (meals)</td>
-              <td className="p-2">{totalsFromMeals.calories}</td>
-              <td className="p-2">{totalsFromMeals.protein}</td>
-              <td className="p-2">{totalsFromMeals.carbs}</td>
-              <td className="p-2">{totalsFromMeals.fat}</td>
-              <td className="p-2"></td>
-            </tr>
-          </tbody>
-        </table>
+              {/* Totals row */}
+              <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 font-semibold text-gray-900 dark:text-white">
+                <td className="p-2">Totals (meals)</td>
+                <td className="p-2">{totalsFromMeals.calories}</td>
+                <td className="p-2">{totalsFromMeals.protein}</td>
+                <td className="p-2">{totalsFromMeals.carbs}</td>
+                <td className="p-2">{totalsFromMeals.fat}</td>
+                <td className="p-2"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <Modal isOpen={coachOpen} onClose={() => setCoachOpen(false)} title="AI Suggestions">
+          <div className="text-gray-900 dark:text-gray-100">{coachText ? `• ${coachText}` : 'No suggestions.'}</div>
+        </Modal>
       </div>
-
-      {/* Macro remaining (numbers high-contrast) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <CardStat label="Remaining Calories" value={remainingCalories} />
-        <CardStat label="Remaining Protein (g)" value={remainingProtein} />
-        <CardStat label="Remaining Carbs (g)" value={remainingCarbs} />
-        <CardStat label="Remaining Fat (g)" value={remainingFat} />
-      </div>
-
-      <Modal isOpen={coachOpen} onClose={() => setCoachOpen(false)} title="AI Suggestions">
-        <div className="text-gray-900 dark:text-gray-100">{coachText ? `• ${coachText}` : 'No suggestions.'}</div>
-      </Modal>
     </div>
   );
 }
@@ -468,11 +546,14 @@ function Stat({ label, value, emphasize=false, hint }: { label: string; value: n
   )
 }
 
-function CardStat({ label, value }: { label: string; value: number }) {
+function Bar({ label, pct, remaining, unit }: { label: string; pct: number; remaining: number; unit: 'kcal' | 'g' }) {
   return (
     <div className="p-3 rounded-xl border bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
-      <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
-      <div className="text-lg font-semibold text-gray-900 dark:text-white">{value}</div>
+      <div className="text-xs text-gray-600 dark:text-gray-300 mb-1">{label}</div>
+      <div className="h-2 w-full rounded bg-gray-200 dark:bg-gray-700 overflow-hidden">
+        <div className="h-full bg-purple-600" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">Remaining: {Math.max(0, Math.round(remaining))} {unit}</div>
     </div>
   )
 }
