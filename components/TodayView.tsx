@@ -31,6 +31,9 @@ type MealRow = {
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 
+// 🔒 Local storage key for immediate hydration
+const LS_TARGETS_KEY = 'aiCoach.currentTargets';
+
 export default function TodayView({
   profile,
   targets,
@@ -53,7 +56,7 @@ export default function TodayView({
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachText, setCoachText] = useState('');
 
-  // ---- Toast (added) ----
+  // ---- Toast (non-intrusive) ----
   const [toast, setToast] = useState<string | null>(null);
   const showToast = (msg: string) => {
     setToast(msg);
@@ -74,10 +77,10 @@ export default function TodayView({
 
   // brief tag for banner chip (CUT / BULK / LEAN / RECOMP / MAINTAIN)
   const [goalLabel, setGoalLabel] = useState<string | null>(() => (targets as any)?.label ?? null);
-  // PATCH: keep the AI Coach rationale as well
+  // Keep the AI Coach rationale as well
   const [goalRationale, setGoalRationale] = useState<string | null>(String((targets as any)?.rationale || '') || null);
 
-  // Detect router type for the Edit link/handler (still used for the “Open full Targets page” link)
+  // Router style (for the link shown inside Quick Edit)
   const [usesHash, setUsesHash] = useState<boolean>(true);
   useEffect(() => {
     try {
@@ -93,13 +96,39 @@ export default function TodayView({
   const mealTimer = useRef<number | null>(null);
   const woTimer = useRef<number | null>(null);
 
-  // Load user + today's data
+  // --- Helpers to persist/load targets locally ---
+  function persistTargetsLocally(payload: any) {
+    try { localStorage.setItem(LS_TARGETS_KEY, JSON.stringify(payload)); } catch {}
+  }
+  function loadTargetsFromLocal(): any | null {
+    try {
+      const raw = localStorage.getItem(LS_TARGETS_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch { return null; }
+  }
+
+  // Load user + today's data (and hydrate targets in this priority order)
+  // 1) days.targets (for today) -> authoritative for Daily Allowance
+  // 2) user_targets (persistent user preference)
+  // 3) localStorage (fast fallback to avoid flicker between screens)
   useEffect(() => {
     (async () => {
       const id = await getCurrentUserId();
       setUserId(id);
 
+      // Fast local fallback to avoid UI flicker on navigation
+      const ls = loadTargetsFromLocal();
+      if (ls?.calories) {
+        setCurrentGoal({ calories: ls.calories || 0, protein: ls.protein || 0, carbs: ls.carbs || 0, fat: ls.fat || 0 });
+        if (ls.label) setGoalLabel(String(ls.label));
+        if (ls.rationale) { setGoalRationale(String(ls.rationale)); setQWhy(String(ls.rationale)); }
+        setQCalories(ls.calories || 0); setQProtein(ls.protein || 0); setQCarbs(ls.carbs || 0); setQFat(ls.fat || 0);
+        setQLabel(String(ls.label || ''));
+      }
+
       if (id) {
+        // Meals for today
         const { data: mealsData } = await supabase
           .from('meals')
           .select('id, meal_summary, calories, protein, carbs, fat')
@@ -108,6 +137,7 @@ export default function TodayView({
           .order('created_at', { ascending: false });
         setMeals((mealsData as any) || []);
 
+        // Day row (today): workout & targets
         const { data: day } = await supabase
           .from('days')
           .select('workout_logged, workout_kcal, targets')
@@ -117,46 +147,96 @@ export default function TodayView({
 
         if (day?.workout_kcal != null) setWorkoutKcal(day.workout_kcal as number);
 
-        // hydrate label & rationale if present
-        if ((day as any)?.targets?.label) {
-          setGoalLabel((day as any).targets.label);
-        }
-        if ((day as any)?.targets?.rationale) {
-          const why = String((day as any).targets.rationale || '') || '';
+        // If day.targets present, hydrate from there (highest priority)
+        const dayTargets = (day as any)?.targets;
+        if (dayTargets && typeof dayTargets === 'object') {
+          const macros = {
+            calories: Number(dayTargets.calories || 0),
+            protein:  Number(dayTargets.protein  || 0),
+            carbs:    Number(dayTargets.carbs    || 0),
+            fat:      Number(dayTargets.fat      || 0),
+          };
+          setCurrentGoal(macros);
+          if (dayTargets.label) setGoalLabel(String(dayTargets.label));
+          const why = String(dayTargets.rationale || '') || '';
           setGoalRationale(why || null);
+
+          // Sync quick edit fields
+          setQCalories(macros.calories); setQProtein(macros.protein);
+          setQCarbs(macros.carbs); setQFat(macros.fat);
+          setQLabel(String(dayTargets.label || ''));
           setQWhy(why);
+
+          // Persist locally for fast next-load
+          persistTargetsLocally({ ...macros, label: dayTargets.label || null, rationale: why || null });
+        } else {
+          // Fall back to user_targets (per-user saved baseline)
+          const { data: ut, error: utErr } = await supabase
+            .from('user_targets')
+            .select('calories, protein, carbs, fat, label, rationale')
+            .eq('user_id', id)
+            .maybeSingle();
+
+          if (!utErr && ut) {
+            const macros = {
+              calories: Number(ut.calories || 0),
+              protein:  Number(ut.protein  || 0),
+              carbs:    Number(ut.carbs    || 0),
+              fat:      Number(ut.fat      || 0),
+            };
+            setCurrentGoal(macros);
+            if (ut.label) setGoalLabel(String(ut.label));
+            const why = String(ut.rationale || '') || '';
+            setGoalRationale(why || null);
+
+            // Sync quick edit fields
+            setQCalories(macros.calories); setQProtein(macros.protein);
+            setQCarbs(macros.carbs); setQFat(macros.fat);
+            setQLabel(String(ut.label || ''));
+            setQWhy(why);
+
+            // Also mirror into today's day row so allowance math is always aligned today
+            await supabase.from('days').upsert({
+              user_id: id,
+              date: todayStr(),
+              targets: { ...macros, ...(ut.label ? { label: ut.label } : {}), ...(why ? { rationale: why } : {}) },
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'user_id, date' });
+
+            // Persist locally
+            persistTargetsLocally({ ...macros, label: ut.label || null, rationale: why || null });
+          }
         }
       }
+
       setLoading(false);
     })();
 
     // Listen for Target saves from Targets page OR quick edit (includes label/rationale)
     const off = eventBus.on<any>('targets:update', async (payload) => {
-      setCurrentGoal({
+      const macros = {
         calories: payload.calories ?? 0,
         protein:  payload.protein  ?? 0,
         carbs:    payload.carbs    ?? 0,
         fat:      payload.fat      ?? 0,
-      });
+      };
+      setCurrentGoal(macros);
       if (payload.label) setGoalLabel(String(payload.label).toUpperCase());
       if (typeof payload.rationale === 'string') setGoalRationale(payload.rationale.trim() || null);
 
       // keep quick edit form in sync
-      setQCalories(payload.calories ?? 0);
-      setQProtein(payload.protein ?? 0);
-      setQCarbs(payload.carbs ?? 0);
-      setQFat(payload.fat ?? 0);
+      setQCalories(macros.calories);
+      setQProtein(macros.protein);
+      setQCarbs(macros.carbs);
+      setQFat(macros.fat);
       setQLabel(String(payload.label || ''));
       setQWhy(String(payload.rationale || ''));
 
-      // PATCH: immediately persist label+rationale+macros into days.targets for today
+      // Persist to today's day row (so allowance remains when switching screens)
       try {
         if (!userId) return;
         const targetsJSON = {
-          calories: payload.calories ?? 0,
-          protein:  payload.protein  ?? 0,
-          carbs:    payload.carbs    ?? 0,
-          fat:      payload.fat      ?? 0,
+          ...macros,
           ...(payload.label ? { label: String(payload.label).toUpperCase() } : {}),
           ...(payload.rationale ? { rationale: String(payload.rationale) } : {}),
         };
@@ -182,6 +262,9 @@ export default function TodayView({
               targets: targetsJSON,
             });
         }
+
+        // 👍 Also stash locally for instant hydration on navigation
+        persistTargetsLocally(targetsJSON);
       } catch (err) {
         console.error('Failed to persist targets to days:', err);
       }
@@ -206,6 +289,16 @@ export default function TodayView({
     setQFat(targets?.fat ?? 0);
     setQLabel(String((targets as any)?.label || ''));
     setQWhy(why);
+
+    // Mirror to local storage too
+    persistTargetsLocally({
+      calories: targets?.calories ?? 0,
+      protein: targets?.protein ?? 0,
+      carbs: targets?.carbs ?? 0,
+      fat: targets?.fat ?? 0,
+      label: (targets as any)?.label || null,
+      rationale: why || null,
+    });
   }, [targets]);
 
   // Totals from meals (consumed)
@@ -357,7 +450,6 @@ export default function TodayView({
               workout_logged: workoutText.trim(),
               workout_kcal: kcal,
               updated_at: new Date().toISOString(),
-              // keep targets JSON up-to-date with label + rationale
               targets: targetsJSON,
             })
             .eq('user_id', userId)
@@ -369,11 +461,13 @@ export default function TodayView({
             date: todayStr(),
             workout_logged: workoutText.trim(),
             workout_kcal: kcal,
-            // seed targets JSON including label + rationale
             targets: targetsJSON,
           });
           if (error) throw error;
         }
+
+        // Also mirror locally so allowance sticks between screens
+        persistTargetsLocally(targetsJSON);
       }
 
       setWorkoutText('');
@@ -436,7 +530,6 @@ export default function TodayView({
     setCoachOpen(true);
   }
 
-  // % helpers for meters
   const pct = (num: number, den: number) => {
     if (!den || den <= 0) return 0;
     const v = Math.round((num / den) * 100);
@@ -450,9 +543,7 @@ export default function TodayView({
     fat:      pct(totalsWithPreview.fat,      currentGoal?.fat     || 0),
   };
 
-  // --- Quick edit open + optional navigation link inside modal
   function openQuickEdit() {
-    // Seed quick edit with current values
     setQCalories(currentGoal?.calories || 0);
     setQProtein(currentGoal?.protein || 0);
     setQCarbs(currentGoal?.carbs || 0);
@@ -474,7 +565,7 @@ export default function TodayView({
     };
 
     try {
-      // 1) Persist a per-user target set (global) via upsert
+      // Persist per-user (baseline)
       const up = await supabase
         .from('user_targets')
         .upsert({
@@ -487,10 +578,9 @@ export default function TodayView({
           rationale: payload.rationale || null,
           updated_at: new Date().toISOString(),
         }, { onConflict: 'user_id' });
-
       if (up.error) throw up.error;
 
-      // 2) Update today's day row too (so TodayView math is immediate & historical day is correct)
+      // Mirror into today's day row (authoritative for today/daily allowance)
       const { data: existing } = await supabase
         .from('days')
         .select('id')
@@ -513,7 +603,7 @@ export default function TodayView({
         if (error) throw error;
       }
 
-      // 3) Update local state + broadcast
+      // Update local state + broadcast + localStorage
       setCurrentGoal({
         calories: payload.calories,
         protein:  payload.protein,
@@ -523,10 +613,9 @@ export default function TodayView({
       setGoalLabel(payload.label || null);
       setGoalRationale(payload.rationale || null);
       eventBus.emit('targets:update', payload);
+      persistTargetsLocally(payload);
 
       setQuickOpen(false);
-
-      // ✅ Toast confirmation
       showToast('Your targets have been saved.');
     } catch (e: any) {
       alert(e?.message || 'Could not save targets.');
@@ -536,9 +625,8 @@ export default function TodayView({
   if (loading) return <div className="text-gray-900 dark:text-gray-100">Loading…</div>;
 
   return (
-    // Centered, responsive app shell (macro meters prioritized)
     <div className="min-h-screen w-full bg-white dark:bg-neutral-950 text-gray-900 dark:text-neutral-100">
-      {/* Global toast */}
+      {/* Toast */}
       {toast && (
         <div className="fixed left-1/2 top-4 -translate-x-1/2 z-50">
           <div className="rounded-xl bg-black text-white dark:bg-white dark:text-black px-4 py-2 shadow-lg">
@@ -552,8 +640,6 @@ export default function TodayView({
         {/* Header + Edit */}
         <div className="flex items-center justify-between mb-3">
           <h1 className="text-xl font-semibold">Today</h1>
-
-          {/* Always opens Quick Edit (reliable). Inside modal there’s a link to Targets page */}
           <button
             onClick={openQuickEdit}
             className="text-sm font-medium rounded-lg px-3 py-1.5 border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-900"
@@ -562,14 +648,14 @@ export default function TodayView({
           </button>
         </div>
 
-        {/* Slim 3-pill summary bar */}
+        {/* Summary */}
         <div className="grid grid-cols-3 gap-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 mb-4">
           <SummaryPill label="Current target" value={goalLabel ? String(goalLabel).toUpperCase() : '—'} />
           <SummaryPill label="Exercise added" value={`${Math.round(exerciseAdded)} kcal`} />
           <SummaryPill label="Daily allowance" value={`${Math.round(dailyAllowance)} kcal`} />
         </div>
 
-        {/* Macro meters front & center */}
+        {/* Macro meters */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
           <MacroMeter title="Calories" used={totalsWithPreview.calories} goal={dailyAllowance} unit="kcal" />
           <MacroMeter title="Protein"  used={totalsWithPreview.protein}  goal={currentGoal?.protein || 0} unit="g" />
@@ -577,7 +663,7 @@ export default function TodayView({
           <MacroMeter title="Fat"      used={totalsWithPreview.fat}      goal={currentGoal?.fat     || 0} unit="g" />
         </div>
 
-        {/* Food eaten & Remaining mini cards */}
+        {/* Food eaten & Remaining */}
         <div className="grid grid-cols-2 gap-3 mb-6">
           <MiniCard
             title="Food eaten"
@@ -713,7 +799,7 @@ export default function TodayView({
           <div>{coachText ? `• ${coachText}` : 'No suggestions.'}</div>
         </Modal>
 
-        {/* Quick Edit Targets modal (always works); includes link to full Targets page */}
+        {/* Quick Edit Targets modal */}
         <Modal
           isOpen={quickOpen}
           onClose={() => setQuickOpen(false)}
@@ -730,7 +816,6 @@ export default function TodayView({
           }
         >
           <div className="space-y-3">
-            {/* Label chip */}
             <div className="flex items-center gap-2">
               <div className="text-xs text-neutral-500">Label</div>
               <input
@@ -741,7 +826,6 @@ export default function TodayView({
               />
             </div>
 
-            {/* Targets grid */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <Field label="Calories" value={qCalories} onChange={setQCalories} suffix="kcal" />
               <Field label="Protein"  value={qProtein}  onChange={setQProtein}  suffix="g" />
@@ -749,7 +833,6 @@ export default function TodayView({
               <Field label="Fat"      value={qFat}      onChange={setQFat}      suffix="g" />
             </div>
 
-            {/* Rationale */}
             <div>
               <div className="text-xs text-neutral-500 mb-1">Why / notes (optional)</div>
               <textarea

@@ -73,3 +73,5 @@ git commit -m "Initial commit of Tyrone's Macros app"
 (or update the message if this is not the first commit)
 
 5. Push to GitHub
+git branch -M main
+git push -u origin main
