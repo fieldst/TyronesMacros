@@ -3,104 +3,136 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { getCurrentUserId } from '../auth';
 
-type DayView = {
+type HistoryEntry = {
+  id: string;
   date: string;
-  meals: { text: string; cal: number; p: number; c: number; f: number }[];
-  workout_kcal: number;
+  note?: string;
+  targets?: {
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    label?: string;
+    rationale?: string;
+  };
+  workout_kcal?: number;
 };
+
+function formatDate(dateStr: string) {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+}
 
 export default function HistoryView() {
   const [userId, setUserId] = useState<string | null>(null);
-  const [days, setDays] = useState<DayView[]>([]);
+  const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       const id = await getCurrentUserId();
       setUserId(id);
-      if (!id) { setLoading(false); return; }
 
-      // meals last 14 days
-      const from = new Date(); from.setDate(from.getDate() - 14);
-      const fromIso = from.toISOString().slice(0,10);
+      if (id) {
+        const { data, error } = await supabase
+          .from('days')
+          .select('id, date, targets, workout_kcal')
+          .eq('user_id', id)
+          .order('date', { ascending: false })
+          .limit(60); // show more; container will scroll
 
-      const { data: meals } = await supabase
-        .from('meals')
-        .select('date, meal_summary, calories, protein, carbs, fat')
-        .eq('user_id', id)
-        .gte('date', fromIso)
-        .order('date', { ascending: false });
-
-      // days with workouts
-      const { data: dayRows } = await supabase
-        .from('days')
-        .select('date, workout_kcal')
-        .eq('user_id', id)
-        .gte('date', fromIso);
-
-      const workoutMap = new Map<string, number>();
-      (dayRows as any[] || []).forEach(d => workoutMap.set(d.date, d.workout_kcal || 0));
-
-      const map = new Map<string, DayView>();
-      (meals as any[] || []).forEach(m => {
-        const d = m.date as string;
-        if (!map.has(d)) map.set(d, { date: d, meals: [], workout_kcal: workoutMap.get(d) || 0 });
-        map.get(d)!.meals.push({
-          text: m.meal_summary,
-          cal: m.calories, p: m.protein, c: m.carbs, f: m.fat
-        });
-      });
-      // ensure workout-only days still show
-      for (const [d, kcal] of workoutMap) {
-        if (!map.has(d)) map.set(d, { date: d, meals: [], workout_kcal: kcal });
+        if (!error && data) {
+          setEntries(data as any);
+        }
       }
-
-      const list = Array.from(map.values()).sort((a,b) => (a.date < b.date ? 1 : -1));
-      setDays(list);
       setLoading(false);
     })();
   }, []);
 
-  if (!userId) return <div className="text-sm text-gray-600">Sign in to view history.</div>;
-  if (loading) return <div>Loading…</div>;
-  if (!days.length) return <div className="text-sm text-gray-600">No history for the last 14 days.</div>;
+  if (loading) {
+    return (
+      <div className="text-center text-neutral-600 dark:text-neutral-300 py-10">
+        Loading history…
+      </div>
+    );
+  }
+
+  if (!entries.length) {
+    return (
+      <div className="text-center text-neutral-600 dark:text-neutral-300 py-10">
+        No history yet.
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-4">
-      {days.map(day => {
-        const totals = day.meals.reduce((acc, m) => ({
-          cal: acc.cal + m.cal, p: acc.p + m.p, c: acc.c + m.c, f: acc.f + m.f
-        }), { cal: 0, p: 0, c: 0, f: 0 });
-        const net = Math.max(0, totals.cal - (day.workout_kcal || 0));
+    <div className="min-h-screen w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+      <div className="mx-auto w-full max-w-md md:max-w-2xl lg:max-w-3xl px-4 py-6">
+        <h1 className="text-xl font-semibold mb-4">History</h1>
 
-        return (
-          <div key={day.date} className="rounded border bg-white">
-            <div className="p-3 border-b font-semibold">{day.date}</div>
-            <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <div className="text-sm font-medium mb-2">Meals</div>
-                <ul className="text-sm space-y-1">
-                  {day.meals.map((m, i) => (
-                    <li key={i} className="flex justify-between border-b py-1">
-                      <span className="pr-2">{m.text}</span>
-                      <span className="text-gray-600">{m.cal} cal • P{m.p}/C{m.c}/F{m.f}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <div className="text-sm font-medium mb-2">Workout</div>
-                <div className="text-sm text-gray-700">
-                  Burn: {day.workout_kcal || 0} cal
-                </div>
-              </div>
-            </div>
-            <div className="px-3 pb-3 text-sm text-gray-700">
-              Day totals: {totals.cal} cal (P{totals.p}/C{totals.c}/F{totals.f}) • Burn: {day.workout_kcal || 0} → Net: {net} cal
-            </div>
+        {/* Scroll container */}
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 overflow-hidden">
+          <div className="max-h-[70vh] overflow-y-auto">
+            <ul className="divide-y divide-neutral-200 dark:divide-neutral-800">
+              {entries.map((e) => (
+                <li key={e.id} className="p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                      {formatDate(e.date)}
+                    </div>
+                    {e.targets?.label && (
+                      <span className="ml-2 px-2 py-1 text-xs rounded-lg bg-purple-600 text-white">
+                        {e.targets.label}
+                      </span>
+                    )}
+                  </div>
+
+                  {e.targets ? (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-2">
+                      <Metric title="Calories" value={e.targets.calories} unit="kcal" />
+                      <Metric title="Protein" value={e.targets.protein} unit="g" />
+                      <Metric title="Carbs" value={e.targets.carbs} unit="g" />
+                      <Metric title="Fat" value={e.targets.fat} unit="g" />
+                    </div>
+                  ) : (
+                    <div className="text-sm text-neutral-800 dark:text-neutral-200 mt-2">
+                      No targets logged
+                    </div>
+                  )}
+
+                  {typeof e.workout_kcal === 'number' && (
+                    <div className="text-xs text-neutral-700 dark:text-neutral-300 mt-2">
+                      Workout: +{e.workout_kcal} kcal
+                    </div>
+                  )}
+
+                  {e.targets?.rationale && (
+                    <div className="mt-2 text-xs text-neutral-800 dark:text-neutral-300 whitespace-pre-wrap">
+                      {e.targets.rationale}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
           </div>
-        );
-      })}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+function Metric({ title, value, unit }: { title: string; value: number; unit: string }) {
+  return (
+    <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-3">
+      <div className="text-xs text-neutral-700 dark:text-neutral-400">{title}</div>
+      <div className="text-lg font-semibold text-neutral-800 dark:text-neutral-200">
+        {Math.round(value)} <span className="text-sm font-medium">{unit}</span>
+      </div>
     </div>
   );
 }

@@ -53,13 +53,31 @@ export default function TodayView({
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachText, setCoachText] = useState('');
 
-  // Local target override (updated when Targets tab saves)
+  // ---- Toast (added) ----
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 3200);
+  };
+
+  // ---- Quick Edit Targets modal state ----
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [qCalories, setQCalories] = useState<number>(targets?.calories ?? 0);
+  const [qProtein,  setQProtein]  = useState<number>(targets?.protein  ?? 0);
+  const [qCarbs,    setQCarbs]    = useState<number>(targets?.carbs    ?? 0);
+  const [qFat,      setQFat]      = useState<number>(targets?.fat      ?? 0);
+  const [qLabel,    setQLabel]    = useState<string>(String((targets as any)?.label || ''));
+  const [qWhy,      setQWhy]      = useState<string>(String((targets as any)?.rationale || ''));
+
+  // Local target override (updated when Targets tab saves or quick edit saves)
   const [currentGoal, setCurrentGoal] = useState<MacroSet>(targets || { calories: 0, protein: 0, carbs: 0, fat: 0 });
 
   // brief tag for banner chip (CUT / BULK / LEAN / RECOMP / MAINTAIN)
   const [goalLabel, setGoalLabel] = useState<string | null>(() => (targets as any)?.label ?? null);
+  // PATCH: keep the AI Coach rationale as well
+  const [goalRationale, setGoalRationale] = useState<string | null>(String((targets as any)?.rationale || '') || null);
 
-  // Detect router type for the Edit link/handler
+  // Detect router type for the Edit link/handler (still used for the “Open full Targets page” link)
   const [usesHash, setUsesHash] = useState<boolean>(true);
   useEffect(() => {
     try {
@@ -99,16 +117,21 @@ export default function TodayView({
 
         if (day?.workout_kcal != null) setWorkoutKcal(day.workout_kcal as number);
 
-        // If your day.targets stores label/rationale, hydrate label:
+        // hydrate label & rationale if present
         if ((day as any)?.targets?.label) {
           setGoalLabel((day as any).targets.label);
+        }
+        if ((day as any)?.targets?.rationale) {
+          const why = String((day as any).targets.rationale || '') || '';
+          setGoalRationale(why || null);
+          setQWhy(why);
         }
       }
       setLoading(false);
     })();
 
-    // Listen for Target saves from Targets tab (includes label/rationale)
-    const off = eventBus.on<any>('targets:update', (payload) => {
+    // Listen for Target saves from Targets page OR quick edit (includes label/rationale)
+    const off = eventBus.on<any>('targets:update', async (payload) => {
       setCurrentGoal({
         calories: payload.calories ?? 0,
         protein:  payload.protein  ?? 0,
@@ -116,16 +139,73 @@ export default function TodayView({
         fat:      payload.fat      ?? 0,
       });
       if (payload.label) setGoalLabel(String(payload.label).toUpperCase());
+      if (typeof payload.rationale === 'string') setGoalRationale(payload.rationale.trim() || null);
+
+      // keep quick edit form in sync
+      setQCalories(payload.calories ?? 0);
+      setQProtein(payload.protein ?? 0);
+      setQCarbs(payload.carbs ?? 0);
+      setQFat(payload.fat ?? 0);
+      setQLabel(String(payload.label || ''));
+      setQWhy(String(payload.rationale || ''));
+
+      // PATCH: immediately persist label+rationale+macros into days.targets for today
+      try {
+        if (!userId) return;
+        const targetsJSON = {
+          calories: payload.calories ?? 0,
+          protein:  payload.protein  ?? 0,
+          carbs:    payload.carbs    ?? 0,
+          fat:      payload.fat      ?? 0,
+          ...(payload.label ? { label: String(payload.label).toUpperCase() } : {}),
+          ...(payload.rationale ? { rationale: String(payload.rationale) } : {}),
+        };
+
+        const { data: existing } = await supabase
+          .from('days')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('date', todayStr());
+
+        if (existing && existing.length > 0) {
+          await supabase
+            .from('days')
+            .update({ targets: targetsJSON, updated_at: new Date().toISOString() })
+            .eq('user_id', userId)
+            .eq('date', todayStr());
+        } else {
+          await supabase
+            .from('days')
+            .insert({
+              user_id: userId,
+              date: todayStr(),
+              targets: targetsJSON,
+            });
+        }
+      } catch (err) {
+        console.error('Failed to persist targets to days:', err);
+      }
     });
 
     return () => { off(); };
   }, []);
 
-  // Keep local currentGoal / label in sync if parent changes
+  // Keep local currentGoal / label / rationale in sync if parent changes
   useEffect(() => {
     setCurrentGoal(targets || { calories: 0, protein: 0, carbs: 0, fat: 0 });
     const lbl = (targets as any)?.label;
     if (lbl) setGoalLabel(String(lbl).toUpperCase());
+
+    const why = String((targets as any)?.rationale || '') || '';
+    setGoalRationale(why || null);
+
+    // sync quick form when parent changes
+    setQCalories(targets?.calories ?? 0);
+    setQProtein(targets?.protein ?? 0);
+    setQCarbs(targets?.carbs ?? 0);
+    setQFat(targets?.fat ?? 0);
+    setQLabel(String((targets as any)?.label || ''));
+    setQWhy(why);
   }, [targets]);
 
   // Totals from meals (consumed)
@@ -264,10 +344,22 @@ export default function TodayView({
           .eq('user_id', userId)
           .eq('date', todayStr());
 
+        const targetsJSON = {
+          ...(currentGoal || { calories: 0, protein: 0, carbs: 0, fat: 0 }),
+          ...(goalLabel ? { label: goalLabel } : {}),
+          ...(goalRationale ? { rationale: goalRationale } : {}),
+        };
+
         if (existing && existing.length > 0) {
           const { error } = await supabase
             .from('days')
-            .update({ workout_logged: workoutText.trim(), workout_kcal: kcal, updated_at: new Date().toISOString() })
+            .update({
+              workout_logged: workoutText.trim(),
+              workout_kcal: kcal,
+              updated_at: new Date().toISOString(),
+              // keep targets JSON up-to-date with label + rationale
+              targets: targetsJSON,
+            })
             .eq('user_id', userId)
             .eq('date', todayStr());
           if (error) throw error;
@@ -277,7 +369,8 @@ export default function TodayView({
             date: todayStr(),
             workout_logged: workoutText.trim(),
             workout_kcal: kcal,
-            targets: { ...currentGoal, label: goalLabel || undefined },
+            // seed targets JSON including label + rationale
+            targets: targetsJSON,
           });
           if (error) throw error;
         }
@@ -343,7 +436,7 @@ export default function TodayView({
     setCoachOpen(true);
   }
 
-  // % helpers for mini progress bars
+  // % helpers for meters
   const pct = (num: number, den: number) => {
     if (!den || den <= 0) return 0;
     const v = Math.round((num / den) * 100);
@@ -357,81 +450,160 @@ export default function TodayView({
     fat:      pct(totalsWithPreview.fat,      currentGoal?.fat     || 0),
   };
 
-  // Robust navigation to Targets
-  function goToTargets(e?: React.MouseEvent) {
-    try { e?.preventDefault(); } catch {}
-    // Prefer hash routers if hash is in use
-    if (usesHash) {
-      try {
-        window.history.pushState({}, '', '#/targets');
-        window.dispatchEvent(new HashChangeEvent('hashchange'));
-        window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
-        return;
-      } catch {}
-      try { window.location.hash = '#/targets'; return; } catch {}
-      try { window.location.href = '#/targets'; return; } catch {}
+  // --- Quick edit open + optional navigation link inside modal
+  function openQuickEdit() {
+    // Seed quick edit with current values
+    setQCalories(currentGoal?.calories || 0);
+    setQProtein(currentGoal?.protein || 0);
+    setQCarbs(currentGoal?.carbs || 0);
+    setQFat(currentGoal?.fat || 0);
+    setQLabel(String(goalLabel || ''));
+    setQWhy(String(goalRationale || (targets as any)?.rationale || ''));
+    setQuickOpen(true);
+  }
+
+  async function saveQuickEdit() {
+    if (!userId) { alert('No user logged in.'); return; }
+    const payload = {
+      calories: Math.max(0, Math.round(qCalories || 0)),
+      protein:  Math.max(0, Math.round(qProtein  || 0)),
+      carbs:    Math.max(0, Math.round(qCarbs    || 0)),
+      fat:      Math.max(0, Math.round(qFat      || 0)),
+      label:    (qLabel || '').toUpperCase(),
+      rationale: qWhy || undefined,
+    };
+
+    try {
+      // 1) Persist a per-user target set (global) via upsert
+      const up = await supabase
+        .from('user_targets')
+        .upsert({
+          user_id: userId,
+          calories: payload.calories,
+          protein: payload.protein,
+          carbs: payload.carbs,
+          fat: payload.fat,
+          label: payload.label || null,
+          rationale: payload.rationale || null,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' });
+
+      if (up.error) throw up.error;
+
+      // 2) Update today's day row too (so TodayView math is immediate & historical day is correct)
+      const { data: existing } = await supabase
+        .from('days')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('date', todayStr());
+
+      if (existing && existing.length > 0) {
+        const { error } = await supabase
+          .from('days')
+          .update({ targets: payload, updated_at: new Date().toISOString() })
+          .eq('user_id', userId)
+          .eq('date', todayStr());
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('days').insert({
+          user_id: userId,
+          date: todayStr(),
+          targets: payload,
+        });
+        if (error) throw error;
+      }
+
+      // 3) Update local state + broadcast
+      setCurrentGoal({
+        calories: payload.calories,
+        protein:  payload.protein,
+        carbs:    payload.carbs,
+        fat:      payload.fat,
+      });
+      setGoalLabel(payload.label || null);
+      setGoalRationale(payload.rationale || null);
+      eventBus.emit('targets:update', payload);
+
+      setQuickOpen(false);
+
+      // ✅ Toast confirmation
+      showToast('Your targets have been saved.');
+    } catch (e: any) {
+      alert(e?.message || 'Could not save targets.');
     }
-    // Otherwise use path
-    try { window.location.assign('/targets'); return; } catch {}
-    try { window.location.href = '/targets'; } catch {}
   }
 
   if (loading) return <div className="text-gray-900 dark:text-gray-100">Loading…</div>;
 
   return (
-    // --- Centered, responsive shell ---
-    <div className="min-h-screen w-full px-4 py-6 flex justify-center">
-      <div className="w-full max-w-screen-sm sm:max-w-screen-md md:max-w-2xl lg:max-w-3xl space-y-6">
-        {/* Current Target banner (with brief label chip) */}
-        <div className="rounded-xl border bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 p-3 flex items-center justify-between">
-          <div className="text-sm text-gray-800 dark:text-gray-100">
-            <div className="font-semibold flex items-center gap-2">
-              Current Target
-              {goalLabel && (
-                <span className="px-2 py-0.5 rounded-md text-xs font-medium bg-purple-600 text-white">
-                  {String(goalLabel).toUpperCase()}
-                </span>
-              )}
-            </div>
-            <div>{(currentGoal?.calories || 0)} kcal • {(currentGoal?.protein || 0)}P / {(currentGoal?.carbs || 0)}C / {(currentGoal?.fat || 0)}F</div>
+    // Centered, responsive app shell (macro meters prioritized)
+    <div className="min-h-screen w-full bg-white dark:bg-neutral-950 text-gray-900 dark:text-neutral-100">
+      {/* Global toast */}
+      {toast && (
+        <div className="fixed left-1/2 top-4 -translate-x-1/2 z-50">
+          <div className="rounded-xl bg-black text-white dark:bg-white dark:text-black px-4 py-2 shadow-lg">
+            {toast}
           </div>
-          {/* Button behaves like a link but forces SPA nav */}
-          <a
-            href={usesHash ? '#/targets' : '/targets'}
-            onClick={goToTargets}
-            className="px-3 py-1.5 rounded-lg bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900 text-sm"
+        </div>
+      )}
+
+      <div className="mx-auto w-full max-w-md md:max-w-2xl lg:max-w-3xl px-4 pb-10 pt-4">
+
+        {/* Header + Edit */}
+        <div className="flex items-center justify-between mb-3">
+          <h1 className="text-xl font-semibold">Today</h1>
+
+          {/* Always opens Quick Edit (reliable). Inside modal there’s a link to Targets page */}
+          <button
+            onClick={openQuickEdit}
+            className="text-sm font-medium rounded-lg px-3 py-1.5 border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-900"
           >
-            Edit
-          </a>
+            Edit Targets
+          </button>
         </div>
 
-        {/* Summary cards */}
-        <div className="grid gap-3 sm:grid-cols-5">
-          <Stat label="Current Goal Target" value={currentGoal?.calories || 0} />
-          <Stat label="Exercise added" value={(workoutKcal || 0) + (previewWorkoutKcal || 0)} />
-          <Stat label="Daily allowance" value={baseTarget + (workoutKcal || 0) + (previewWorkoutKcal || 0)} />
-          <Stat label="Food eaten" value={totalsWithPreview.calories} />
-          <Stat
-            label="Remaining"
-            value={remainingCalories}
-            emphasize
-            hint={remainingCalories < 0 ? 'Over target' : undefined}
+        {/* Slim 3-pill summary bar */}
+        <div className="grid grid-cols-3 gap-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 mb-4">
+          <SummaryPill label="Current target" value={goalLabel ? String(goalLabel).toUpperCase() : '—'} />
+          <SummaryPill label="Exercise added" value={`${Math.round(exerciseAdded)} kcal`} />
+          <SummaryPill label="Daily allowance" value={`${Math.round(dailyAllowance)} kcal`} />
+        </div>
+
+        {/* Macro meters front & center */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+          <MacroMeter title="Calories" used={totalsWithPreview.calories} goal={dailyAllowance} unit="kcal" />
+          <MacroMeter title="Protein"  used={totalsWithPreview.protein}  goal={currentGoal?.protein || 0} unit="g" />
+          <MacroMeter title="Carbs"    used={totalsWithPreview.carbs}    goal={currentGoal?.carbs   || 0} unit="g" />
+          <MacroMeter title="Fat"      used={totalsWithPreview.fat}      goal={currentGoal?.fat     || 0} unit="g" />
+        </div>
+
+        {/* Food eaten & Remaining mini cards */}
+        <div className="grid grid-cols-2 gap-3 mb-6">
+          <MiniCard
+            title="Food eaten"
+            rows={[
+              ['Calories', `${Math.round(totalsWithPreview.calories)} kcal`],
+              ['Protein',  `${Math.round(totalsWithPreview.protein)} g`],
+              ['Carbs',    `${Math.round(totalsWithPreview.carbs)} g`],
+              ['Fat',      `${Math.round(totalsWithPreview.fat)} g`],
+            ]}
+          />
+          <MiniCard
+            title="Remaining"
+            rows={[
+              ['Calories', `${Math.max(0, Math.round(remainingCalories))} kcal`],
+              ['Protein',  `${Math.max(0, Math.round(remainingProtein))} g`],
+              ['Carbs',    `${Math.max(0, Math.round(remainingCarbs))} g`],
+              ['Fat',      `${Math.max(0, Math.round(remainingFat))} g`],
+            ]}
           />
         </div>
 
-        {/* Macro progress mini-gauges (simple bars) */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <Bar label="Calories used" pct={consumedPct.calories} remaining={remainingCalories} unit="kcal" />
-          <Bar label="Protein used"  pct={consumedPct.protein}  remaining={remainingProtein}  unit="g" />
-          <Bar label="Carbs used"    pct={consumedPct.carbs}    remaining={remainingCarbs}    unit="g" />
-          <Bar label="Fat used"      pct={consumedPct.fat}      remaining={remainingFat}      unit="g" />
-        </div>
-
         {/* Meal input */}
-        <div className="rounded border border-gray-200 dark:border-gray-700 p-3 space-y-2 bg-white dark:bg-gray-800">
-          <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Log a meal</label>
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 space-y-2 bg-white dark:bg-neutral-900 mb-4">
+          <label className="text-sm font-medium">Log a meal</label>
           <textarea
-            className="w-full border border-gray-200 dark:border-gray-700 rounded p-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
+            className="w-full border border-neutral-200 dark:border-neutral-800 rounded-xl p-2 text-sm bg-white dark:bg-neutral-950"
             rows={3}
             placeholder="e.g., 1 bowl oatmeal with milk and banana; 2 eggs scrambled in olive oil"
             value={mealText}
@@ -441,32 +613,32 @@ export default function TodayView({
             <button
               onClick={addMealFromEstimate}
               disabled={busy || !mealText.trim()}
-              className="btn btn-primary disabled:opacity-60 bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900 rounded-xl px-3 py-1"
+              className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-60"
             >
-              {busy ? 'Estimating…' : 'Estimate macros & add'}
+              AI Coach: Estimate & add
             </button>
             <button
               onClick={suggestSwap}
               disabled={busy}
-              className="btn btn-ghost rounded-xl px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
               type="button"
+              className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800 disabled:opacity-60"
             >
-              Quick swap for remaining
+              AI Coach: Quick swap
             </button>
-            {swap && <div className="text-sm text-gray-700 dark:text-gray-200">• {swap}</div>}
+            {swap && <div className="text-sm">• {swap}</div>}
           </div>
           {previewMeal && (
-            <div className="text-xs text-gray-600 dark:text-gray-300">
+            <div className="text-xs text-neutral-600 dark:text-neutral-300">
               Preview impact: −{previewMeal.calories} kcal, −{previewMeal.protein}P, −{previewMeal.carbs}C, −{previewMeal.fat}F
             </div>
           )}
         </div>
 
         {/* Workout input */}
-        <div className="rounded border border-gray-200 dark:border-gray-700 p-3 space-y-2 bg-white dark:bg-gray-800">
-          <label className="text-sm font-medium text-gray-700 dark:text-gray-200">Log today’s workout</label>
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 space-y-2 bg-white dark:bg-neutral-900 mb-6">
+          <label className="text-sm font-medium">Log today’s workout</label>
           <input
-            className="w-full border border-gray-200 dark:border-gray-700 rounded p-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
+            className="w-full border border-neutral-200 dark:border-neutral-800 rounded-xl p-2 text-sm bg-white dark:bg-neutral-950"
             placeholder="e.g., 30 min brisk walk; or 45 min weight training moderate"
             value={workoutText}
             onChange={(e) => setWorkoutText(e.target.value)}
@@ -475,12 +647,12 @@ export default function TodayView({
             <button
               onClick={addWorkout}
               disabled={busy || !workoutText.trim()}
-              className="btn btn-primary disabled:opacity-60 bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900 rounded-xl px-3 py-1"
+              className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-60"
             >
-              {busy ? 'Estimating…' : 'Estimate burn & save'}
+              AI Coach: Estimate burn
             </button>
             {(workoutKcal > 0 || previewWorkoutKcal > 0) && (
-              <div className="text-sm text-gray-700 dark:text-gray-200">
+              <div className="text-sm">
                 {previewWorkoutKcal > 0 ? `Preview: +${previewWorkoutKcal} kcal` : `Saved: +${workoutKcal} kcal to allowance`}
               </div>
             )}
@@ -488,10 +660,10 @@ export default function TodayView({
         </div>
 
         {/* Meals table */}
-        <div className="rounded border border-gray-200 dark:border-gray-700 overflow-x-auto bg-white dark:bg-gray-800">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 overflow-x-auto bg-white dark:bg-neutral-900">
           <table className="min-w-full text-sm">
             <thead>
-              <tr className="bg-gray-100 dark:bg-gray-700 text-left text-gray-900 dark:text-gray-100">
+              <tr className="bg-neutral-100 dark:bg-neutral-800 text-left">
                 <th className="p-2">Meal</th>
                 <th className="p-2">Cal</th>
                 <th className="p-2">P</th>
@@ -500,23 +672,31 @@ export default function TodayView({
                 <th className="p-2"></th>
               </tr>
             </thead>
-            <tbody className="text-gray-900 dark:text-gray-100">
+            <tbody>
               {meals.map((m) => (
-                <tr key={m.id} className="border-t border-gray-200 dark:border-gray-700">
+                <tr key={m.id} className="border-t border-neutral-200 dark:border-neutral-800">
                   <td className="p-2 align-top">{m.meal_summary}</td>
                   <td className="p-2">{m.calories}</td>
                   <td className="p-2">{m.protein}</td>
                   <td className="p-2">{m.carbs}</td>
                   <td className="p-2">{m.fat}</td>
                   <td className="p-2 flex gap-2">
-                    <button className="btn btn-ghost px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100" onClick={() => coachMealRow(m)}>Coach</button>
-                    <button className="btn btn-danger px-2 py-1 rounded-lg bg-red-600 text-white dark:bg-red-500" onClick={() => removeMeal(m.id)}>Remove</button>
+                    <button
+                      className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800"
+                      onClick={() => coachMealRow(m)}
+                    >
+                      AI Coach: Coach
+                    </button>
+                    <button
+                      className="px-2 py-1 rounded-lg bg-red-600 text-white dark:bg-red-500"
+                      onClick={() => removeMeal(m.id)}
+                    >
+                      Remove
+                    </button>
                   </td>
                 </tr>
               ))}
-
-              {/* Totals row */}
-              <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 font-semibold text-gray-900 dark:text-white">
+              <tr className="border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 font-semibold">
                 <td className="p-2">Totals (meals)</td>
                 <td className="p-2">{totalsFromMeals.calories}</td>
                 <td className="p-2">{totalsFromMeals.protein}</td>
@@ -528,32 +708,164 @@ export default function TodayView({
           </table>
         </div>
 
-        <Modal isOpen={coachOpen} onClose={() => setCoachOpen(false)} title="AI Suggestions">
-          <div className="text-gray-900 dark:text-gray-100">{coachText ? `• ${coachText}` : 'No suggestions.'}</div>
+        {/* Coaching modal */}
+        <Modal isOpen={coachOpen} onClose={() => setCoachOpen(false)} title="AI Coach Suggestions">
+          <div>{coachText ? `• ${coachText}` : 'No suggestions.'}</div>
+        </Modal>
+
+        {/* Quick Edit Targets modal (always works); includes link to full Targets page */}
+        <Modal
+          isOpen={quickOpen}
+          onClose={() => setQuickOpen(false)}
+          title={
+            <div className="flex items-center justify-between w-full">
+              <span>Quick Edit Targets</span>
+              <a
+                href={usesHash ? '#/targets' : '/targets'}
+                className="text-xs underline opacity-80 hover:opacity-100"
+              >
+                Open full Targets page
+              </a>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            {/* Label chip */}
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-neutral-500">Label</div>
+              <input
+                className="flex-1 rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+                placeholder="e.g., LEAN / CUT / BULK"
+                value={qLabel}
+                onChange={(e) => setQLabel(e.target.value)}
+              />
+            </div>
+
+            {/* Targets grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Field label="Calories" value={qCalories} onChange={setQCalories} suffix="kcal" />
+              <Field label="Protein"  value={qProtein}  onChange={setQProtein}  suffix="g" />
+              <Field label="Carbs"    value={qCarbs}    onChange={setQCarbs}    suffix="g" />
+              <Field label="Fat"      value={qFat}      onChange={setQFat}      suffix="g" />
+            </div>
+
+            {/* Rationale */}
+            <div>
+              <div className="text-xs text-neutral-500 mb-1">Why / notes (optional)</div>
+              <textarea
+                rows={3}
+                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+                placeholder="Short rationale for these targets…"
+                value={qWhy}
+                onChange={(e) => setQWhy(e.target.value)}
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={saveQuickEdit}
+                className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black"
+              >
+                Save targets
+              </button>
+              <button
+                onClick={() => setQuickOpen(false)}
+                className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </Modal>
       </div>
     </div>
   );
 }
 
-function Stat({ label, value, emphasize=false, hint }: { label: string; value: number; emphasize?: boolean; hint?: string }) {
+/* ---------- UI atoms ---------- */
+
+function SummaryPill({ label, value }: { label: string; value: string }) {
   return (
-    <div className={`p-3 rounded-xl border bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 ${emphasize ? 'ring-2 ring-gray-900 dark:ring-gray-200' : ''}`}>
-      <div className="text-sm text-gray-600 dark:text-gray-300">{label}</div>
-      <div className="text-2xl font-bold text-gray-900 dark:text-white">{value}</div>
-      {hint && <div className="text-xs text-gray-500 dark:text-gray-400">{hint}</div>}
+    <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 px-3 py-2">
+      <div className="text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{label}</div>
+      <div className="text-sm font-semibold">{value}</div>
     </div>
-  )
+  );
 }
 
-function Bar({ label, pct, remaining, unit }: { label: string; pct: number; remaining: number; unit: 'kcal' | 'g' }) {
+function MacroMeter({
+  title,
+  used,
+  goal,
+  unit,
+}: {
+  title: string;
+  used: number;
+  goal: number;
+  unit: string;
+}) {
+  const pct = Math.max(0, Math.min(100, (used / Math.max(goal, 1)) * 100));
   return (
-    <div className="p-3 rounded-xl border bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700">
-      <div className="text-xs text-gray-600 dark:text-gray-300 mb-1">{label}</div>
-      <div className="h-2 w-full rounded bg-gray-200 dark:bg-gray-700 overflow-hidden">
-        <div className="h-full bg-purple-600" style={{ width: `${pct}%` }} />
+    <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3">
+      <div className="flex items-baseline justify-between mb-2">
+        <h3 className="text-sm font-medium">{title}</h3>
+        <span className="text-xs text-neutral-500 dark:text-neutral-400">
+          {Math.round(used)} / {Math.round(goal)} {unit}
+        </span>
       </div>
-      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">Remaining: {Math.max(0, Math.round(remaining))} {unit}</div>
+      <div className="h-3 w-full rounded-full bg-neutral-100 dark:bg-neutral-900 overflow-hidden">
+        <div
+          className="h-3 rounded-full bg-purple-600"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="mt-1 text-right text-[11px] text-neutral-500 dark:text-neutral-400">
+        {Math.round(pct)}%
+      </div>
     </div>
-  )
+  );
+}
+
+function MiniCard({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: [string, string][];
+}) {
+  return (
+    <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3">
+      <div className="text-sm font-semibold mb-2">{title}</div>
+      <dl className="space-y-1">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex items-center justify-between text-sm">
+            <dt className="text-neutral-500 dark:text-neutral-400">{k}</dt>
+            <dd className="font-medium">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function Field({
+  label, value, onChange, suffix
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  suffix?: string;
+}) {
+  return (
+    <div>
+      <div className="text-xs text-neutral-500 mb-1">{label}{suffix ? ` (${suffix})` : ''}</div>
+      <input
+        type="number"
+        min={0}
+        className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+        value={Number.isFinite(value) ? value : 0}
+        onChange={(e) => onChange(Number(e.target.value || 0))}
+      />
+    </div>
+  );
 }

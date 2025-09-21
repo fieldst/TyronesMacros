@@ -60,3 +60,16 @@ You can add this web app to your phone's home screen so it looks and feels like 
 - Server: `api/generate.ts` now uses OpenAI **Responses API** (`gpt-4o-mini` by default), supports `response_format` with JSON schema, and applies a simple in-memory **rate limit** (configurable via `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MS`).
 - Client: `services/openaiService.ts` provides replacements for the former Gemini helpers and auto-sends the **selected model** (saved in `localStorage` by `components/ModelSelector.tsx`).
 - Env: set `OPENAI_API_KEY`, optionally override `OPENAI_MODEL` and `VITE_OPENAI_MODEL`.
+
+## Implement Git
+
+3. Stage all your files
+git add .
+
+4. Commit changes
+git commit -m "Initial commit of Tyrone's Macros app"
+
+
+(or update the message if this is not the first commit)
+
+5. Push to GitHub
