@@ -11,6 +11,14 @@ import {
 } from '../services/openaiService';
 import { eventBus } from '../lib/eventBus';
 
+// NEW: use the services that write to food_entries/workout_entries and trigger recalc
+import {
+  upsertFoodEntry,
+  deleteFoodEntry,
+  upsertWorkoutEntry,
+  deleteWorkoutEntry,
+} from '../services/loggingService';
+
 export type MacroSet = { calories: number; protein: number; carbs: number; fat: number };
 export type Profile = {
   sex?: 'male' | 'female';
@@ -22,11 +30,19 @@ export type Profile = {
 
 type MealRow = {
   id: string;
-  meal_summary: string;
+  meal_summary?: string;   // prefer, if present
+  name?: string;           // fallback
   calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+};
+
+type DayRow = {
+  id: string;
+  date: string;
+  targets?: any;
+  totals?: { foodCals: number; workoutCals: number; allowance: number; remaining: number };
 };
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
@@ -46,12 +62,16 @@ export default function TodayView({
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // NEW: we anchor everything on today's `days` row
+  const [day, setDay] = useState<DayRow | null>(null);
+  const [dayId, setDayId] = useState<string | null>(null);
+
   const [mealText, setMealText] = useState('');
   const [workoutText, setWorkoutText] = useState('');
   const [meals, setMeals] = useState<MealRow[]>([]);
   const [busy, setBusy] = useState(false);
 
-  const [workoutKcal, setWorkoutKcal] = useState<number>(0);
+  // derived preview-only values (not persisted)
   const [swap, setSwap] = useState<string>('');
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachText, setCoachText] = useState('');
@@ -108,16 +128,50 @@ export default function TodayView({
     } catch { return null; }
   }
 
-  // Load user + today's data (and hydrate targets in this priority order)
-  // 1) days.targets (for today) -> authoritative for Daily Allowance
-  // 2) user_targets (persistent user preference)
-  // 3) localStorage (fast fallback to avoid flicker between screens)
+  // Ensure today's `days` row exists and return it
+ async function ensureTodayDay(uId: string, fallbackTargets: any): Promise<DayRow> {
+  const { data: existing, error } = await supabase
+    .from('days')
+    .select('id, date, targets, totals')
+    .eq('user_id', uId)
+    .eq('date', todayStr())
+    .maybeSingle();
+
+  if (!error && existing) return existing as DayRow;
+
+  // days.targets is NOT NULL in your DB — always provide a JSON object
+  const defaultTargets = fallbackTargets ?? {
+    calories: 0,
+    protein:  0,
+    carbs:    0,
+    fat:      0,
+  };
+
+  const insert = {
+    user_id: uId,
+    date: todayStr(),
+    targets: defaultTargets,  // never null
+    totals: null,             // ok if this column allows nulls
+  };
+
+  const { data: created, error: insErr } = await supabase
+    .from('days')
+    .insert(insert)
+    .select('id, date, targets, totals')
+    .single();
+
+  if (insErr) throw insErr;
+  return created as DayRow;
+}
+
+
+  // Load user + today's data, hydrate targets (days.targets > user_targets > local)
   useEffect(() => {
     (async () => {
       const id = await getCurrentUserId();
       setUserId(id);
 
-      // Fast local fallback to avoid UI flicker on navigation
+      // Fast local fallback to avoid flicker on navigation
       const ls = loadTargetsFromLocal();
       if (ls?.calories) {
         setCurrentGoal({ calories: ls.calories || 0, protein: ls.protein || 0, carbs: ls.carbs || 0, fat: ls.fat || 0 });
@@ -128,27 +182,35 @@ export default function TodayView({
       }
 
       if (id) {
-        // Meals for today
-        const { data: mealsData } = await supabase
-          .from('meals')
-          .select('id, meal_summary, calories, protein, carbs, fat')
-          .eq('user_id', id)
-          .eq('date', todayStr())
-          .order('created_at', { ascending: false });
-        setMeals((mealsData as any) || []);
+        // 1) Try user_targets (baseline) for first-time creation of `days`
+        // 1) Try latest row from targets (baseline) for first-time creation of `days`
+const { data: ut } = await supabase
+  .from('targets')
+  .select('calories, protein, carbs, fat, label, rationale, created_at')
+  .eq('user_id', id)
+  .order('created_at', { ascending: false })
+  .limit(1)
+  .maybeSingle();
 
-        // Day row (today): workout & targets
-        const { data: day } = await supabase
-          .from('days')
-          .select('workout_logged, workout_kcal, targets')
-          .eq('user_id', id)
-          .eq('date', todayStr())
-          .maybeSingle();
+const baselineTargets = ut
+  ? {
+      calories: Number(ut.calories || 0),
+      protein:  Number(ut.protein  || 0),
+      carbs:    Number(ut.carbs    || 0),
+      fat:      Number(ut.fat      || 0),
+      ...(ut.label ? { label: ut.label } : {}),
+      ...(ut.rationale ? { rationale: ut.rationale } : {}),
+    }
+  : null;
 
-        if (day?.workout_kcal != null) setWorkoutKcal(day.workout_kcal as number);
 
-        // If day.targets present, hydrate from there (highest priority)
-        const dayTargets = (day as any)?.targets;
+        // 2) Ensure today's day row exists
+        const todayDay = await ensureTodayDay(id, baselineTargets);
+        setDay(todayDay);
+        setDayId(todayDay.id);
+
+        // 3) If day.targets present, hydrate from there (highest priority)
+        const dayTargets = todayDay.targets;
         if (dayTargets && typeof dayTargets === 'object') {
           const macros = {
             calories: Number(dayTargets.calories || 0),
@@ -169,43 +231,47 @@ export default function TodayView({
 
           // Persist locally for fast next-load
           persistTargetsLocally({ ...macros, label: dayTargets.label || null, rationale: why || null });
-        } else {
-          // Fall back to user_targets (per-user saved baseline)
-          const { data: ut, error: utErr } = await supabase
-            .from('user_targets')
-            .select('calories, protein, carbs, fat, label, rationale')
+        } else if (baselineTargets) {
+          // else hydrate from baseline
+          const macros = {
+            calories: Number(baselineTargets.calories || 0),
+            protein:  Number(baselineTargets.protein  || 0),
+            carbs:    Number(baselineTargets.carbs    || 0),
+            fat:      Number(baselineTargets.fat      || 0),
+          };
+          setCurrentGoal(macros);
+          if (baselineTargets.label) setGoalLabel(String(baselineTargets.label));
+          const why = String(baselineTargets.rationale || '') || '';
+          setGoalRationale(why || null);
+
+          setQCalories(macros.calories); setQProtein(macros.protein);
+          setQCarbs(macros.carbs); setQFat(macros.fat);
+          setQLabel(String(baselineTargets.label || ''));
+          setQWhy(why);
+
+          // also mirror into today's row for consistency
+          await supabase.from('days').update({ targets: baselineTargets, updated_at: new Date().toISOString() })
+            .eq('id', todayDay.id);
+          persistTargetsLocally({ ...macros, label: baselineTargets.label || null, rationale: why || null });
+        }
+
+        // 4) Load today's food entries (use entry_date + description)
+        if (todayDay.id) {
+          const { data: foods } = await supabase
+            .from('food_entries')
+            .select('id, description, calories, protein, carbs, fat, created_at')
             .eq('user_id', id)
-            .maybeSingle();
+            .eq('entry_date', todayStr())
+            .order('created_at', { ascending: false });
 
-          if (!utErr && ut) {
-            const macros = {
-              calories: Number(ut.calories || 0),
-              protein:  Number(ut.protein  || 0),
-              carbs:    Number(ut.carbs    || 0),
-              fat:      Number(ut.fat      || 0),
-            };
-            setCurrentGoal(macros);
-            if (ut.label) setGoalLabel(String(ut.label));
-            const why = String(ut.rationale || '') || '';
-            setGoalRationale(why || null);
-
-            // Sync quick edit fields
-            setQCalories(macros.calories); setQProtein(macros.protein);
-            setQCarbs(macros.carbs); setQFat(macros.fat);
-            setQLabel(String(ut.label || ''));
-            setQWhy(why);
-
-            // Also mirror into today's day row so allowance math is always aligned today
-            await supabase.from('days').upsert({
-              user_id: id,
-              date: todayStr(),
-              targets: { ...macros, ...(ut.label ? { label: ut.label } : {}), ...(why ? { rationale: why } : {}) },
-              updated_at: new Date().toISOString(),
-            }, { onConflict: 'user_id, date' });
-
-            // Persist locally
-            persistTargetsLocally({ ...macros, label: ut.label || null, rationale: why || null });
-          }
+          setMeals(((foods as any) || []).map((r: any) => ({
+            id: r.id,
+            meal_summary: r.description,
+            calories: r.calories,
+            protein: r.protein,
+            carbs: r.carbs,
+            fat: r.fat,
+          })));
         }
       }
 
@@ -235,36 +301,21 @@ export default function TodayView({
       // Persist to today's day row (so allowance remains when switching screens)
       try {
         if (!userId) return;
-        const targetsJSON = {
-          ...macros,
-          ...(payload.label ? { label: String(payload.label).toUpperCase() } : {}),
-          ...(payload.rationale ? { rationale: String(payload.rationale) } : {}),
-        };
-
-        const { data: existing } = await supabase
+        const { data: d } = await supabase
           .from('days')
           .select('id')
           .eq('user_id', userId)
-          .eq('date', todayStr());
+          .eq('date', todayStr())
+          .maybeSingle();
 
-        if (existing && existing.length > 0) {
+        if (d?.id) {
           await supabase
             .from('days')
-            .update({ targets: targetsJSON, updated_at: new Date().toISOString() })
-            .eq('user_id', userId)
-            .eq('date', todayStr());
-        } else {
-          await supabase
-            .from('days')
-            .insert({
-              user_id: userId,
-              date: todayStr(),
-              targets: targetsJSON,
-            });
+            .update({ targets: payload, updated_at: new Date().toISOString() })
+            .eq('id', d.id);
+          setDay(prev => prev ? { ...prev, targets: payload } : prev);
         }
-
-        // 👍 Also stash locally for instant hydration on navigation
-        persistTargetsLocally(targetsJSON);
+        persistTargetsLocally(payload);
       } catch (err) {
         console.error('Failed to persist targets to days:', err);
       }
@@ -272,6 +323,26 @@ export default function TodayView({
 
     return () => { off(); };
   }, []);
+
+  // Also listen for recalc broadcasts so allowance/remaining update instantly
+  useEffect(() => {
+    const onTotals = (payload: { dayId: string; totals: any }) => {
+      setDay(prev => (prev && prev.id === payload.dayId) ? { ...prev, totals: payload.totals } : prev);
+    };
+
+    const unsubs = [
+      eventBus.on('day:totals', onTotals),
+      eventBus.on('meal:upsert', onTotals),
+      eventBus.on('meal:delete', onTotals),
+      eventBus.on('workout:upsert', onTotals),
+      eventBus.on('workout:delete', onTotals),
+    ];
+
+    return () => {
+      unsubs.forEach((fn) => { try { fn?.(); } catch {} });
+    };
+  }, []);
+
 
   // Keep local currentGoal / label / rationale in sync if parent changes
   useEffect(() => {
@@ -301,7 +372,7 @@ export default function TodayView({
     });
   }, [targets]);
 
-  // Totals from meals (consumed)
+  // Totals from meals (consumed) — for the onTotalsChange callback only
   const totalsFromMeals: MacroSet = useMemo(
     () =>
       meals.reduce(
@@ -324,7 +395,7 @@ export default function TodayView({
       protein:  totalsFromMeals.protein  + (previewMeal.protein  || 0),
       carbs:    totalsFromMeals.carbs    + (previewMeal.carbs    || 0),
       fat:      totalsFromMeals.fat      + (previewMeal.fat      || 0),
-    }
+    };
   }, [totalsFromMeals, previewMeal]);
 
   // Report consumed totals (without preview) upward if needed
@@ -332,11 +403,14 @@ export default function TodayView({
     onTotalsChange?.(totalsFromMeals);
   }, [totalsFromMeals, onTotalsChange]);
 
-  // Allowance / remaining math
-  const baseTarget = currentGoal?.calories || 0;
-  const exerciseAdded = (workoutKcal || 0) + (previewWorkoutKcal || 0);
-  const dailyAllowance = baseTarget + exerciseAdded;
-  const remainingCalories = dailyAllowance - totalsWithPreview.calories; // can go negative
+  // Allowance / remaining math: use persisted totals + preview overlays
+  const persistedAllowance  = day?.totals?.allowance ?? (currentGoal?.calories || 0);
+  const persistedRemaining  = day?.totals?.remaining ?? (currentGoal?.calories || 0); // before preview overlay
+  const previewWorkoutDelta = previewWorkoutKcal > 0 ? previewWorkoutKcal : 0;
+  const dailyAllowance = Math.max(0, Math.round(persistedAllowance + previewWorkoutDelta));
+  const remainingCalories = Math.round(
+    (persistedRemaining + previewWorkoutDelta) - (previewMeal?.calories || 0)
+  );
 
   const remainingProtein = Math.max(0, (currentGoal?.protein || 0) - totalsWithPreview.protein);
   const remainingCarbs   = Math.max(0, (currentGoal?.carbs   || 0) - totalsWithPreview.carbs);
@@ -376,101 +450,68 @@ export default function TodayView({
     return () => { if (woTimer.current) window.clearTimeout(woTimer.current); };
   }, [workoutText, profile]);
 
-  // Actions
+  // Actions (NOW using services → they insert/update, recalc, broadcast)
   async function addMealFromEstimate() {
-    if (!mealText.trim()) return;
+    if (!mealText.trim() || !userId || !dayId) return;
     setBusy(true);
     try {
       const res = await estimateMacrosForMeal(mealText.trim(), profile);
+      await upsertFoodEntry({
+        userId,
+        dayId,
+        name: mealText.trim(), // service maps to food_entries.description
+        calories: Math.round(res.macros.calories || 0),
+        protein: Math.round(res.macros.protein || 0),
+        carbs: Math.round(res.macros.carbs || 0),
+        fat: Math.round(res.macros.fat || 0),
+        meta: { source: 'ai_estimate' },
+      });
 
-      if (userId) {
-        const { data, error } = await supabase
-          .from('meals')
-          .insert({
-            user_id: userId,
-            date: todayStr(),
-            meal_type: 'other',
-            meal_summary: mealText.trim(),
-            calories: Math.round(res.macros.calories || 0),
-            protein: Math.round(res.macros.protein || 0),
-            carbs: Math.round(res.macros.carbs || 0),
-            fat: Math.round(res.macros.fat || 0),
-          })
-          .select('id, meal_summary, calories, protein, carbs, fat')
-          .single();
-        if (error) throw error;
-        setMeals((list) => [data as any, ...list]);
-      } else {
-        const local: MealRow = {
-          id: String(Date.now()),
-          meal_summary: mealText.trim(),
-          calories: Math.round(res.macros.calories || 0),
-          protein: Math.round(res.macros.protein || 0),
-          carbs: Math.round(res.macros.carbs || 0),
-          fat: Math.round(res.macros.fat || 0),
-        };
-        setMeals((list) => [local, ...list]);
-      }
+      // Refresh the list (use entry_date + description)
+      const { data: foods } = await supabase
+        .from('food_entries')
+        .select('id, description, calories, protein, carbs, fat, created_at')
+        .eq('user_id', userId)
+        .eq('entry_date', todayStr())
+        .order('created_at', { ascending: false });
+
+      setMeals(((foods as any) || []).map((r: any) => ({
+        id: r.id,
+        meal_summary: r.description,
+        calories: r.calories,
+        protein: r.protein,
+        carbs: r.carbs,
+        fat: r.fat,
+      })));
 
       setMealText('');
       setPreviewMeal(null);
     } catch (e: any) {
-      openCoaching(e?.message || 'Could not estimate meal macros.');
+      openCoaching(e?.message || 'Could not estimate/add meal.');
     } finally {
       setBusy(false);
     }
   }
 
   async function addWorkout() {
-    if (!workoutText.trim()) return;
+    if (!workoutText.trim() || !userId || !dayId) return;
     setBusy(true);
     try {
       const res = await getWorkoutCalories(workoutText.trim(), profile);
       const kcal = Math.round(res.total_calories || 0);
-      setWorkoutKcal(kcal);
-      setPreviewWorkoutKcal(0);
 
-      if (userId) {
-        const { data: existing } = await supabase
-          .from('days')
-          .select('id')
-          .eq('user_id', userId)
-          .eq('date', todayStr());
-
-        const targetsJSON = {
-          ...(currentGoal || { calories: 0, protein: 0, carbs: 0, fat: 0 }),
-          ...(goalLabel ? { label: goalLabel } : {}),
-          ...(goalRationale ? { rationale: goalRationale } : {}),
-        };
-
-        if (existing && existing.length > 0) {
-          const { error } = await supabase
-            .from('days')
-            .update({
-              workout_logged: workoutText.trim(),
-              workout_kcal: kcal,
-              updated_at: new Date().toISOString(),
-              targets: targetsJSON,
-            })
-            .eq('user_id', userId)
-            .eq('date', todayStr());
-          if (error) throw error;
-        } else {
-          const { error } = await supabase.from('days').insert({
-            user_id: userId,
-            date: todayStr(),
-            workout_logged: workoutText.trim(),
-            workout_kcal: kcal,
-            targets: targetsJSON,
-          });
-          if (error) throw error;
-        }
-
-        // Also mirror locally so allowance sticks between screens
-        persistTargetsLocally(targetsJSON);
-      }
+      // upsert workout entry → recalc → broadcast updates `days.totals`
+      await upsertWorkoutEntry({
+        userId,
+        dayId,
+        kind: workoutText.trim(),
+        calories: kcal,
+        meta: { source: 'ai_estimate' },
+      });
 
       setWorkoutText('');
+      setPreviewWorkoutKcal(0);
+      showToast(`Added +${kcal} kcal to allowance`);
     } catch (e: any) {
       openCoaching(e?.message || 'Could not estimate workout burn.');
     } finally {
@@ -480,13 +521,15 @@ export default function TodayView({
 
   async function coachMealRow(m: MealRow) {
     try {
-      const remainingBefore: MacroSet = {
-        calories: Math.max(0, (currentGoal?.calories || 0) - (totalsFromMeals.calories - (m.calories || 0))),
-        protein:  Math.max(0, (currentGoal?.protein  || 0) - (totalsFromMeals.protein  - (m.protein  || 0))),
-        carbs:    Math.max(0, (currentGoal?.carbs    || 0) - (totalsFromMeals.carbs    - (m.carbs    || 0))),
-        fat:      Math.max(0, (currentGoal?.fat      || 0) - (totalsFromMeals.fat      - (m.fat      || 0))),
+      // Recompute remaining BEFORE this meal
+      const before = {
+        calories: Math.max(0, (currentGoal?.calories || 0) - ((totalsFromMeals.calories - (m.calories || 0)))),
+        protein:  Math.max(0, (currentGoal?.protein  || 0) - ((totalsFromMeals.protein  - (m.protein  || 0)))),
+        carbs:    Math.max(0, (currentGoal?.carbs    || 0) - ((totalsFromMeals.carbs    - (m.carbs    || 0)))),
+        fat:      Math.max(0, (currentGoal?.fat      || 0) - ((totalsFromMeals.fat      - (m.fat      || 0)))),
       };
-      const coaching = await getMealCoaching(m.meal_summary, profile, remainingBefore, currentGoal);
+      const title = (m.meal_summary || m.name || '').toString();
+      const coaching = await getMealCoaching(title, profile, before, currentGoal);
 
       const suggestionLines = (coaching?.suggestions || [])
         .filter((s: any) => typeof s === 'string' && s.trim())
@@ -504,8 +547,25 @@ export default function TodayView({
   }
 
   async function removeMeal(id: string) {
-    setMeals((list) => list.filter((x) => x.id !== id));
-    if (userId) await supabase.from('meals').delete().eq('id', id).eq('user_id', userId);
+    if (!userId || !dayId) return;
+    await deleteFoodEntry({ id, userId, dayId });
+
+    // Reload with entry_date + description mapping
+    const { data: foods } = await supabase
+      .from('food_entries')
+      .select('id, description, calories, protein, carbs, fat, created_at')
+      .eq('user_id', userId)
+      .eq('entry_date', todayStr())
+      .order('created_at', { ascending: false });
+
+    setMeals(((foods as any) || []).map((r: any) => ({
+      id: r.id,
+      meal_summary: r.description,
+      calories: r.calories,
+      protein: r.protein,
+      carbs: r.carbs,
+      fat: r.fat,
+    })));
   }
 
   async function suggestSwap() {
@@ -536,8 +596,9 @@ export default function TodayView({
     return Math.max(0, Math.min(100, v));
   };
 
+  // For meters, use preview overlay on top of persisted allowance
   const consumedPct = {
-    calories: pct(totalsWithPreview.calories, (currentGoal?.calories || 0) + (workoutKcal + previewWorkoutKcal)),
+    calories: pct(totalsWithPreview.calories, dailyAllowance),
     protein:  pct(totalsWithPreview.protein,  currentGoal?.protein || 0),
     carbs:    pct(totalsWithPreview.carbs,    currentGoal?.carbs   || 0),
     fat:      pct(totalsWithPreview.fat,      currentGoal?.fat     || 0),
@@ -581,26 +642,18 @@ export default function TodayView({
       if (up.error) throw up.error;
 
       // Mirror into today's day row (authoritative for today/daily allowance)
-      const { data: existing } = await supabase
+      const { data: d } = await supabase
         .from('days')
         .select('id')
         .eq('user_id', userId)
-        .eq('date', todayStr());
+        .eq('date', todayStr())
+        .maybeSingle();
 
-      if (existing && existing.length > 0) {
-        const { error } = await supabase
-          .from('days')
+      if (d?.id) {
+        await supabase.from('days')
           .update({ targets: payload, updated_at: new Date().toISOString() })
-          .eq('user_id', userId)
-          .eq('date', todayStr());
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from('days').insert({
-          user_id: userId,
-          date: todayStr(),
-          targets: payload,
-        });
-        if (error) throw error;
+          .eq('id', d.id);
+        setDay(prev => prev ? { ...prev, targets: payload } : prev);
       }
 
       // Update local state + broadcast + localStorage
@@ -651,7 +704,7 @@ export default function TodayView({
         {/* Summary */}
         <div className="grid grid-cols-3 gap-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 mb-4">
           <SummaryPill label="Current target" value={goalLabel ? String(goalLabel).toUpperCase() : '—'} />
-          <SummaryPill label="Exercise added" value={`${Math.round(exerciseAdded)} kcal`} />
+          <SummaryPill label="Exercise added" value={`${Math.round(day?.totals?.workoutCals ?? 0)} kcal`} />
           <SummaryPill label="Daily allowance" value={`${Math.round(dailyAllowance)} kcal`} />
         </div>
 
@@ -737,10 +790,8 @@ export default function TodayView({
             >
               AI Coach: Estimate burn
             </button>
-            {(workoutKcal > 0 || previewWorkoutKcal > 0) && (
-              <div className="text-sm">
-                {previewWorkoutKcal > 0 ? `Preview: +${previewWorkoutKcal} kcal` : `Saved: +${workoutKcal} kcal to allowance`}
-              </div>
+            {previewWorkoutKcal > 0 && (
+              <div className="text-sm">Preview: +{previewWorkoutKcal} kcal</div>
             )}
           </div>
         </div>
@@ -761,11 +812,11 @@ export default function TodayView({
             <tbody>
               {meals.map((m) => (
                 <tr key={m.id} className="border-t border-neutral-200 dark:border-neutral-800">
-                  <td className="p-2 align-top">{m.meal_summary}</td>
+                  <td className="p-2 align-top">{m.meal_summary || m.name}</td>
                   <td className="p-2">{m.calories}</td>
-                  <td className="p-2">{m.protein}</td>
-                  <td className="p-2">{m.carbs}</td>
-                  <td className="p-2">{m.fat}</td>
+                  <td className="p-2">{m.protein ?? '—'}</td>
+                  <td className="p-2">{m.carbs ?? '—'}</td>
+                  <td className="p-2">{m.fat ?? '—'}</td>
                   <td className="p-2 flex gap-2">
                     <button
                       className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800"
