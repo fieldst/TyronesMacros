@@ -1,4 +1,7 @@
 // components/TodayView.tsx
+import { ensureTodayDay } from '../services/dayService';
+import { dateKeyChicago, msUntilNextChicagoMidnight, greetingForChicago } from '../lib/dateLocal';
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Modal from './Modal';
 import { supabase } from '../supabaseClient';
@@ -11,7 +14,6 @@ import {
 } from '../services/openaiService';
 import { eventBus } from '../lib/eventBus';
 
-// NEW: use the services that write to food_entries/workout_entries and trigger recalc
 import {
   upsertFoodEntry,
   deleteFoodEntry,
@@ -30,12 +32,18 @@ export type Profile = {
 
 type MealRow = {
   id: string;
-  meal_summary?: string;   // prefer, if present
-  name?: string;           // fallback
+  meal_summary?: string;
+  name?: string;
   calories: number;
   protein?: number;
   carbs?: number;
   fat?: number;
+};
+
+type WorkoutRow = {
+  id: string;
+  kind: string;
+  calories: number;
 };
 
 type DayRow = {
@@ -45,10 +53,175 @@ type DayRow = {
   totals?: { foodCals: number; workoutCals: number; allowance: number; remaining: number };
 };
 
-function todayStr() { return new Date().toISOString().slice(0, 10); }
-
 // 🔒 Local storage key for immediate hydration
 const LS_TARGETS_KEY = 'aiCoach.currentTargets';
+
+// ---- tiny helper to log Supabase errors consistently ----
+function logSb(where: string, error: any, extra?: Record<string, unknown>) {
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.error(`[Supabase] ${where}`, { error, ...extra });
+  }
+}
+
+// ---------- Greeting helpers ----------
+async function fetchDisplayName(userId: string): Promise<string> {
+  try {
+    // profiles.id path
+    const { data: byId, error: err1 } = await supabase
+      .from('profiles')
+      .select('full_name, first_name, name, username')
+      .eq('id', userId)
+      .maybeSingle();
+    if (!err1 && byId) {
+      const raw =
+        (byId as any).full_name ||
+        (byId as any).first_name ||
+        (byId as any).name ||
+        (byId as any).username ||
+        '';
+      if (raw) return String(raw);
+    }
+
+    // profiles.user_id path
+    const { data: byUserId, error: err2 } = await supabase
+      .from('profiles')
+      .select('full_name, first_name, name, username')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (!err2 && byUserId) {
+      const raw =
+        (byUserId as any).full_name ||
+        (byUserId as any).first_name ||
+        (byUserId as any).name ||
+        (byUserId as any).username ||
+        '';
+      if (raw) return String(raw);
+    }
+
+    // auth fallback
+    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    if (!authErr && authData?.user) {
+      const u = authData.user;
+      const meta = (u as any).user_metadata || {};
+      const raw =
+        meta.full_name ||
+        meta.name ||
+        meta.first_name ||
+        meta.given_name ||
+        (u.email ? u.email.split('@')[0] : '') ||
+        '';
+      if (raw) return String(raw);
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('[fetchDisplayName] error', e);
+  }
+  return '';
+}
+
+function toFirstName(display: string): string {
+  const trimmed = (display || '').trim();
+  if (!trimmed) return '';
+  const first = trimmed.split(/\s+/)[0];
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+// ---- rotating motivational phrases by daypart ----
+const PHRASES: Record<'Morning' | 'Afternoon' | 'Evening', string[]> = {
+  Morning: [
+    "Let’s set the tone today.",
+    "Small wins add up—start now.",
+    "Own the morning, own the day.",
+    "Consistency beats intensity.",
+    "Fuel smart, move with intent.",
+  ],
+  Afternoon: [
+    "Keep the momentum going.",
+    "Strong choices, strong results.",
+    "You’re closer than you think.",
+    "Stay locked in—finish strong.",
+    "Quality over quantity—always.",
+  ],
+  Evening: [
+    "Finish the day with purpose.",
+    "Recovery is part of progress.",
+    "One more good choice.",
+    "Reflect, reset, and rise again.",
+    "Proud of the effort today.",
+  ],
+};
+
+function pickPhrase(daypart: 'Morning' | 'Afternoon' | 'Evening') {
+  const list = PHRASES[daypart] || [];
+  if (!list.length) return '';
+  // deterministic selection per date + daypart to avoid flicker
+  const key = `${dateKeyChicago()}-${daypart}`;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return list[hash % list.length];
+}
+
+/**
+ * Smart calorie estimator for workouts:
+ * 1) Calls your AI `getWorkoutCalories`.
+ * 2) If AI returns 0/NaN, falls back to a MET-based estimate using parsed minutes + activity type.
+ */
+async function estimateWorkoutKcalSmart(text: string, profile: Profile): Promise<number> {
+  // Try AI first
+  try {
+    const ai = await getWorkoutCalories(text, profile);
+    const aiKcal = Math.round(Number(ai?.total_calories ?? 0));
+    if (Number.isFinite(aiKcal) && aiKcal > 0) return aiKcal;
+  } catch {
+    // ignore and try heuristic
+  }
+
+  // Heuristic fallback
+  const lower = text.toLowerCase();
+  // duration
+  const durMatch = lower.match(/(\d{1,3})\s*(min|mins|minute|minutes)/);
+  const minutes = durMatch ? Math.max(10, Math.min(180, parseInt(durMatch[1], 10))) : 30;
+
+  // intensity
+  const intense =
+    /\b(intense|hard|vigorous|interval|hiit|sprint)\b/.test(lower) ? 'high' :
+    /\b(moderate|tempo|threshold)\b/.test(lower) ? 'moderate' : 'easy';
+
+  // categorize movement
+  const isRun = /\b(run|jog)\b/.test(lower);
+  const isWalk = /\bwalk\b/.test(lower);
+  const isRide = /\b(cycle|bike|biking|cycling|spin)\b/.test(lower);
+  const isRow = /\b(row|rowing|erg)\b/.test(lower);
+  const isSwim = /\b(swim|laps)\b/.test(lower);
+  const isLift =
+    /\b(weight|lift|strength|deadlift|squat|bench|press|clean|snatch|curl|push|pull|db|barbell|kettlebell)\b/.test(lower);
+
+  // MET table (very rough)
+  const METS = {
+    walk_easy: 3.5,
+    run_easy: 7.0,
+    run_high: 9.8,
+    ride_moderate: 7.5,
+    row_moderate: 7.0,
+    swim_moderate: 8.0,
+    lift_easy: 3.5,
+    lift_moderate: 6.0,
+    misc_moderate: 5.0,
+  };
+
+  let met = METS.misc_moderate;
+  if (isWalk) met = METS.walk_easy;
+  else if (isRun) met = intense === 'high' ? METS.run_high : METS.run_easy;
+  else if (isRide) met = METS.ride_moderate;
+  else if (isRow) met = METS.row_moderate;
+  else if (isSwim) met = METS.swim_moderate;
+  else if (isLift) met = intense === 'high' ? METS.lift_moderate : METS.lift_easy;
+
+  const kg = Math.max(40, Math.min(200, (profile?.weight_lbs ?? 180) * 0.45359237)); // assume 180 lb if unknown
+  const kcal = Math.round((met * 3.5 * kg / 200) * minutes);
+  return Math.max(0, kcal);
+}
 
 export default function TodayView({
   profile,
@@ -62,19 +235,35 @@ export default function TodayView({
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // NEW: we anchor everything on today's `days` row
+  // today's Chicago date key
+  const [dayKey, setDayKey] = useState<string>(''); // YYYY-MM-DD
+
+  // today's `days` row
   const [day, setDay] = useState<DayRow | null>(null);
   const [dayId, setDayId] = useState<string | null>(null);
 
   const [mealText, setMealText] = useState('');
   const [workoutText, setWorkoutText] = useState('');
   const [meals, setMeals] = useState<MealRow[]>([]);
+  const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
   const [busy, setBusy] = useState(false);
 
   // derived preview-only values (not persisted)
   const [swap, setSwap] = useState<string>('');
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachText, setCoachText] = useState('');
+
+  // Workouts: edit modal state (AI-only calories)
+  const [editWoOpen, setEditWoOpen] = useState(false);
+  const [editWoId, setEditWoId] = useState<string | null>(null);
+  const [editWoKind, setEditWoKind] = useState<string>('');
+  const [editWoKcal, setEditWoKcal] = useState<number>(0); // read-only display
+
+  // Per-row suggestions modal
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestForId, setSuggestForId] = useState<string | null>(null);
+  const [suggestForTitle, setSuggestForTitle] = useState<string>('');
+  const [woSuggestions, setWoSuggestions] = useState<Array<{ title: string; kcal: number }>>([]);
 
   // ---- Toast (non-intrusive) ----
   const [toast, setToast] = useState<string | null>(null);
@@ -97,24 +286,21 @@ export default function TodayView({
 
   // brief tag for banner chip (CUT / BULK / LEAN / RECOMP / MAINTAIN)
   const [goalLabel, setGoalLabel] = useState<string | null>(() => (targets as any)?.label ?? null);
-  // Keep the AI Coach rationale as well
   const [goalRationale, setGoalRationale] = useState<string | null>(String((targets as any)?.rationale || '') || null);
-
-  // Router style (for the link shown inside Quick Edit)
-  const [usesHash, setUsesHash] = useState<boolean>(true);
-  useEffect(() => {
-    try {
-      setUsesHash(typeof window !== 'undefined' && window.location.hash?.startsWith('#/'));
-    } catch {
-      setUsesHash(true);
-    }
-  }, []);
 
   // Live preview (debounced) while typing
   const [previewMeal, setPreviewMeal] = useState<MacroSet | null>(null);
   const [previewWorkoutKcal, setPreviewWorkoutKcal] = useState<number>(0);
   const mealTimer = useRef<number | null>(null);
   const woTimer = useRef<number | null>(null);
+
+  // midnight timer
+  const midnightTimer = useRef<number | null>(null);
+
+  // Personalized greeting
+  const [greeting, setGreeting] = useState<'Morning' | 'Afternoon' | 'Evening'>(greetingForChicago());
+  const [phrase, setPhrase] = useState<string>(pickPhrase(greeting));
+  const [userName, setUserName] = useState<string>('');
 
   // --- Helpers to persist/load targets locally ---
   function persistTargetsLocally(payload: any) {
@@ -128,44 +314,24 @@ export default function TodayView({
     } catch { return null; }
   }
 
-  // Ensure today's `days` row exists and return it
- async function ensureTodayDay(uId: string, fallbackTargets: any): Promise<DayRow> {
-  const { data: existing, error } = await supabase
-    .from('days')
-    .select('id, date, targets, totals')
-    .eq('user_id', uId)
-    .eq('date', todayStr())
-    .maybeSingle();
+  // Load workouts for a day (fixed select columns)
+  async function loadWorkouts(uId: string, dateKey: string) {
+    const { data, error } = await supabase
+      .from('workout_entries')
+      .select('id, activity, calories_burned, created_at')
+      .eq('user_id', uId)
+      .eq('entry_date', dateKey)
+      .order('created_at', { ascending: false });
+    logSb('loadWorkouts', error, { uId, dateKey });
 
-  if (!error && existing) return existing as DayRow;
+    setWorkouts(((data as any) || []).map((r: any) => ({
+      id: r.id,
+      kind: r.activity,
+      calories: Math.round(r.calories_burned || 0),
+    })));
+  }
 
-  // days.targets is NOT NULL in your DB — always provide a JSON object
-  const defaultTargets = fallbackTargets ?? {
-    calories: 0,
-    protein:  0,
-    carbs:    0,
-    fat:      0,
-  };
-
-  const insert = {
-    user_id: uId,
-    date: todayStr(),
-    targets: defaultTargets,  // never null
-    totals: null,             // ok if this column allows nulls
-  };
-
-  const { data: created, error: insErr } = await supabase
-    .from('days')
-    .insert(insert)
-    .select('id, date, targets, totals')
-    .single();
-
-  if (insErr) throw insErr;
-  return created as DayRow;
-}
-
-
-  // Load user + today's data, hydrate targets (days.targets > user_targets > local)
+  // -------- Bootstrap --------
   useEffect(() => {
     (async () => {
       const id = await getCurrentUserId();
@@ -181,35 +347,21 @@ export default function TodayView({
         setQLabel(String(ls.label || ''));
       }
 
+      // Set Chicago day key
+      const todayKey = dateKeyChicago();
+      setDayKey(todayKey);
+
       if (id) {
-        // 1) Try user_targets (baseline) for first-time creation of `days`
-        // 1) Try latest row from targets (baseline) for first-time creation of `days`
-const { data: ut } = await supabase
-  .from('targets')
-  .select('calories, protein, carbs, fat, label, rationale, created_at')
-  .eq('user_id', id)
-  .order('created_at', { ascending: false })
-  .limit(1)
-  .maybeSingle();
+        // Personalized name
+        const dn = await fetchDisplayName(id);
+        setUserName(toFirstName(dn));
 
-const baselineTargets = ut
-  ? {
-      calories: Number(ut.calories || 0),
-      protein:  Number(ut.protein  || 0),
-      carbs:    Number(ut.carbs    || 0),
-      fat:      Number(ut.fat      || 0),
-      ...(ut.label ? { label: ut.label } : {}),
-      ...(ut.rationale ? { rationale: ut.rationale } : {}),
-    }
-  : null;
-
-
-        // 2) Ensure today's day row exists
-        const todayDay = await ensureTodayDay(id, baselineTargets);
+        // Ensure today's day row exists (persists yesterday's targets forward)
+        const todayDay = await ensureTodayDay(id);
         setDay(todayDay);
         setDayId(todayDay.id);
 
-        // 3) If day.targets present, hydrate from there (highest priority)
+        // Hydrate targets from day (authoritative)
         const dayTargets = todayDay.targets;
         if (dayTargets && typeof dayTargets === 'object') {
           const macros = {
@@ -223,46 +375,23 @@ const baselineTargets = ut
           const why = String(dayTargets.rationale || '') || '';
           setGoalRationale(why || null);
 
-          // Sync quick edit fields
+          // sync quick edit
           setQCalories(macros.calories); setQProtein(macros.protein);
           setQCarbs(macros.carbs); setQFat(macros.fat);
-          setQLabel(String(dayTargets.label || ''));
-          setQWhy(why);
+          setQLabel(String(dayTargets.label || '')); setQWhy(why);
 
-          // Persist locally for fast next-load
           persistTargetsLocally({ ...macros, label: dayTargets.label || null, rationale: why || null });
-        } else if (baselineTargets) {
-          // else hydrate from baseline
-          const macros = {
-            calories: Number(baselineTargets.calories || 0),
-            protein:  Number(baselineTargets.protein  || 0),
-            carbs:    Number(baselineTargets.carbs    || 0),
-            fat:      Number(baselineTargets.fat      || 0),
-          };
-          setCurrentGoal(macros);
-          if (baselineTargets.label) setGoalLabel(String(baselineTargets.label));
-          const why = String(baselineTargets.rationale || '') || '';
-          setGoalRationale(why || null);
-
-          setQCalories(macros.calories); setQProtein(macros.protein);
-          setQCarbs(macros.carbs); setQFat(macros.fat);
-          setQLabel(String(baselineTargets.label || ''));
-          setQWhy(why);
-
-          // also mirror into today's row for consistency
-          await supabase.from('days').update({ targets: baselineTargets, updated_at: new Date().toISOString() })
-            .eq('id', todayDay.id);
-          persistTargetsLocally({ ...macros, label: baselineTargets.label || null, rationale: why || null });
         }
 
-        // 4) Load today's food entries (use entry_date + description)
+        // Load today's food entries (entry_date = dayKey)
         if (todayDay.id) {
-          const { data: foods } = await supabase
+          const { data: foods, error: foodsErr } = await supabase
             .from('food_entries')
             .select('id, description, calories, protein, carbs, fat, created_at')
             .eq('user_id', id)
-            .eq('entry_date', todayStr())
+            .eq('entry_date', todayKey)
             .order('created_at', { ascending: false });
+          logSb('bootstrap:load foods', foodsErr, { id, todayKey });
 
           setMeals(((foods as any) || []).map((r: any) => ({
             id: r.id,
@@ -272,6 +401,9 @@ const baselineTargets = ut
             carbs: r.carbs,
             fat: r.fat,
           })));
+
+          // Load today's workouts (fixed columns)
+          await loadWorkouts(id, todayKey);
         }
       }
 
@@ -298,31 +430,82 @@ const baselineTargets = ut
       setQLabel(String(payload.label || ''));
       setQWhy(String(payload.rationale || ''));
 
-      // Persist to today's day row (so allowance remains when switching screens)
+      // Persist to today's day row
       try {
         if (!userId) return;
-        const { data: d } = await supabase
+        const { data: d, error: dErr } = await supabase
           .from('days')
           .select('id')
           .eq('user_id', userId)
-          .eq('date', todayStr())
+          .eq('date', dateKeyChicago())
           .maybeSingle();
+        logSb('targets:update fetch day', dErr, { userId });
 
-        if (d?.id) {
-          await supabase
+        if ((d as any)?.id) {
+          const { error: updErr } = await supabase
             .from('days')
             .update({ targets: payload, updated_at: new Date().toISOString() })
-            .eq('id', d.id);
+            .eq('id', (d as any).id);
+          logSb('targets:update update days.targets', updErr, { dayId: (d as any).id });
           setDay(prev => prev ? { ...prev, targets: payload } : prev);
         }
         persistTargetsLocally(payload);
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error('Failed to persist targets to days:', err);
       }
     });
 
     return () => { off(); };
   }, []);
+
+  // -------- Greeting refresh + phrase rotation --------
+  useEffect(() => {
+    const tick = () => setGreeting(greetingForChicago());
+    tick(); // initial sync
+    const id = window.setInterval(tick, 5 * 60 * 1000); // update every 5 minutes
+    return () => window.clearInterval(id);
+  }, []);
+  useEffect(() => { setPhrase(pickPhrase(greeting)); }, [greeting]);
+
+  // -------- Midnight rollover (America/Chicago) --------
+  useEffect(() => {
+    if (!userId) return;
+
+    const schedule = () => {
+      const ms = msUntilNextChicagoMidnight();
+      if (midnightTimer.current) window.clearTimeout(midnightTimer.current);
+      midnightTimer.current = window.setTimeout(async () => {
+        // At midnight: ensure new day exists, move UI to it
+        await ensureTodayDay(userId);
+        const newKey = dateKeyChicago();
+        setDayKey(newKey);
+
+        // reload today’s `days` row and clear lists (new day starts empty)
+        const { data: todayDay, error } = await supabase
+          .from('days')
+          .select('id, date, targets, totals')
+          .eq('user_id', userId)
+          .eq('date', newKey)
+          .maybeSingle();
+        logSb('midnight:fetch new day', error, { userId, newKey });
+
+        if (!error && todayDay) {
+          setDay(todayDay as DayRow);
+          setDayId((todayDay as DayRow).id);
+        }
+        setMeals([]);
+        setWoSuggestions([]);
+        await loadWorkouts(userId, newKey);
+
+        // reschedule for next midnight
+        schedule();
+      }, ms) as unknown as number;
+    };
+
+    schedule();
+    return () => { if (midnightTimer.current) window.clearTimeout(midnightTimer.current); };
+  }, [userId]);
 
   // Also listen for recalc broadcasts so allowance/remaining update instantly
   useEffect(() => {
@@ -342,7 +525,6 @@ const baselineTargets = ut
       unsubs.forEach((fn) => { try { fn?.(); } catch {} });
     };
   }, []);
-
 
   // Keep local currentGoal / label / rationale in sync if parent changes
   useEffect(() => {
@@ -412,9 +594,34 @@ const baselineTargets = ut
     (persistedRemaining + previewWorkoutDelta) - (previewMeal?.calories || 0)
   );
 
-  const remainingProtein = Math.max(0, (currentGoal?.protein || 0) - totalsWithPreview.protein);
-  const remainingCarbs   = Math.max(0, (currentGoal?.carbs   || 0) - totalsWithPreview.carbs);
-  const remainingFat     = Math.max(0, (currentGoal?.fat     || 0) - totalsWithPreview.fat);
+  // >>> Scaled macro goals so workouts expand macro budgets proportionally <<<
+  const scaledProteinGoal = useMemo(() => {
+    const base = currentGoal?.protein || 0;
+    const baseCal = currentGoal?.calories || 0;
+    if (baseCal <= 0) return base;
+    const scale = dailyAllowance / baseCal;
+    return Math.round(base * scale);
+  }, [currentGoal, dailyAllowance]);
+
+  const scaledCarbGoal = useMemo(() => {
+    const base = currentGoal?.carbs || 0;
+    const baseCal = currentGoal?.calories || 0;
+    if (baseCal <= 0) return base;
+    const scale = dailyAllowance / baseCal;
+    return Math.round(base * scale);
+  }, [currentGoal, dailyAllowance]);
+
+  const scaledFatGoal = useMemo(() => {
+    const base = currentGoal?.fat || 0;
+    const baseCal = currentGoal?.calories || 0;
+    if (baseCal <= 0) return base;
+    const scale = dailyAllowance / baseCal;
+    return Math.round(base * scale);
+  }, [currentGoal, dailyAllowance]);
+
+  const remainingProtein = Math.max(0, scaledProteinGoal - totalsWithPreview.protein);
+  const remainingCarbs   = Math.max(0, scaledCarbGoal   - totalsWithPreview.carbs);
+  const remainingFat     = Math.max(0, scaledFatGoal    - totalsWithPreview.fat);
 
   // Debounced live preview while typing meal/workout
   useEffect(() => {
@@ -441,8 +648,8 @@ const baselineTargets = ut
     if (!workoutText.trim()) { setPreviewWorkoutKcal(0); return; }
     woTimer.current = window.setTimeout(async () => {
       try {
-        const res = await getWorkoutCalories(workoutText.trim(), profile);
-        setPreviewWorkoutKcal(Math.round(res.total_calories || 0));
+        const kcal = await estimateWorkoutKcalSmart(workoutText.trim(), profile);
+        setPreviewWorkoutKcal(kcal);
       } catch {
         setPreviewWorkoutKcal(0);
       }
@@ -450,7 +657,7 @@ const baselineTargets = ut
     return () => { if (woTimer.current) window.clearTimeout(woTimer.current); };
   }, [workoutText, profile]);
 
-  // Actions (NOW using services → they insert/update, recalc, broadcast)
+  // ---- Actions ----
   async function addMealFromEstimate() {
     if (!mealText.trim() || !userId || !dayId) return;
     setBusy(true);
@@ -459,7 +666,7 @@ const baselineTargets = ut
       await upsertFoodEntry({
         userId,
         dayId,
-        name: mealText.trim(), // service maps to food_entries.description
+        name: mealText.trim(),
         calories: Math.round(res.macros.calories || 0),
         protein: Math.round(res.macros.protein || 0),
         carbs: Math.round(res.macros.carbs || 0),
@@ -467,13 +674,14 @@ const baselineTargets = ut
         meta: { source: 'ai_estimate' },
       });
 
-      // Refresh the list (use entry_date + description)
-      const { data: foods } = await supabase
+      // Refresh the list
+      const { data: foods, error: foodsErr } = await supabase
         .from('food_entries')
         .select('id, description, calories, protein, carbs, fat, created_at')
         .eq('user_id', userId)
-        .eq('entry_date', todayStr())
+        .eq('entry_date', dayKey)
         .order('created_at', { ascending: false });
+      logSb('addMealFromEstimate:reload foods', foodsErr, { userId, dayKey });
 
       setMeals(((foods as any) || []).map((r: any) => ({
         id: r.id,
@@ -486,6 +694,15 @@ const baselineTargets = ut
 
       setMealText('');
       setPreviewMeal(null);
+
+      // Also refresh day totals immediately (in case event loop/render lags)
+      const { data: d, error: dayErr } = await supabase
+        .from('days')
+        .select('id, totals')
+        .eq('id', dayId)
+        .maybeSingle();
+      logSb('addMealFromEstimate:reload day totals', dayErr, { dayId });
+      if (!dayErr && d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
     } catch (e: any) {
       openCoaching(e?.message || 'Could not estimate/add meal.');
     } finally {
@@ -493,14 +710,45 @@ const baselineTargets = ut
     }
   }
 
+  // Local delete wrapper for meals
+  async function deleteFoodLocal(id: string) {
+    if (!userId || !dayId) return;
+    await deleteFoodEntry({ id, userId, dayId });
+
+    const { data: foods, error: foodsErr } = await supabase
+      .from('food_entries')
+      .select('id, description, calories, protein, carbs, fat, created_at')
+      .eq('user_id', userId)
+      .eq('entry_date', dayKey)
+      .order('created_at', { ascending: false });
+    logSb('deleteFood:reload foods', foodsErr, { userId, dayKey });
+
+    setMeals(((foods as any) || []).map((r: any) => ({
+      id: r.id,
+      meal_summary: r.description,
+      calories: r.calories,
+      protein: r.protein,
+      carbs: r.carbs,
+      fat: r.fat,
+    })));
+
+    // refresh day totals
+    const { data: d, error: dayErr } = await supabase
+      .from('days')
+      .select('id, totals')
+      .eq('id', dayId)
+      .maybeSingle();
+    logSb('deleteFood:reload day totals', dayErr, { dayId });
+    if (!dayErr && d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+  }
+
   async function addWorkout() {
     if (!workoutText.trim() || !userId || !dayId) return;
     setBusy(true);
     try {
-      const res = await getWorkoutCalories(workoutText.trim(), profile);
-      const kcal = Math.round(res.total_calories || 0);
+      // ✅ Use smart estimator so we never silently log 0
+      const kcal = await estimateWorkoutKcalSmart(workoutText.trim(), profile);
 
-      // upsert workout entry → recalc → broadcast updates `days.totals`
       await upsertWorkoutEntry({
         userId,
         dayId,
@@ -512,6 +760,16 @@ const baselineTargets = ut
       setWorkoutText('');
       setPreviewWorkoutKcal(0);
       showToast(`Added +${kcal} kcal to allowance`);
+
+      // refresh list + day totals immediately
+      await loadWorkouts(userId, dayKey);
+      const { data: d, error: dayErr } = await supabase
+        .from('days')
+        .select('id, totals')
+        .eq('id', dayId)
+        .maybeSingle();
+      logSb('addWorkout:reload day totals', dayErr, { dayId });
+      if (!dayErr && d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
     } catch (e: any) {
       openCoaching(e?.message || 'Could not estimate workout burn.');
     } finally {
@@ -519,9 +777,181 @@ const baselineTargets = ut
     }
   }
 
+  function startEditWorkout(w: WorkoutRow) {
+    setEditWoId(w.id);
+    setEditWoKind(w.kind);
+    setEditWoKcal(w.calories); // initial display (read-only); AI will re-estimate on Save
+    setEditWoOpen(true);
+  }
+
+  async function estimateEditWorkoutKcal() {
+    if (!editWoKind.trim()) return;
+    setBusy(true);
+    try {
+      const kcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile);
+      setEditWoKcal(kcal); // read-only display update
+      showToast(`Estimated ~${kcal} kcal`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveEditWorkout() {
+    if (!userId || !dayId || !editWoId) return;
+    setBusy(true);
+    try {
+      // Always re-estimate based on the edited workout text (AI is the only editor)
+      const aiKcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile);
+      setEditWoKcal(aiKcal);
+
+      await upsertWorkoutEntry({
+        id: editWoId,
+        userId,
+        dayId,
+        kind: editWoKind.trim(),
+        calories: Math.max(0, aiKcal),
+        meta: { source: 'manual_edit_ai_estimated' },
+      });
+
+      await loadWorkouts(userId, dayKey);
+      // refresh day totals
+      const { data: d, error: dayErr } = await supabase
+        .from('days')
+        .select('id, totals')
+        .eq('id', dayId)
+        .maybeSingle();
+      logSb('saveEditWorkout:reload day totals', dayErr, { dayId });
+      if (!dayErr && d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+
+      setEditWoOpen(false);
+      showToast(`Saved with AI-estimated ${aiKcal} kcal`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancelEditWorkout() {
+    setEditWoOpen(false);
+    setEditWoId(null);
+  }
+
+  async function removeWorkout(id: string) {
+    if (!userId || !dayId) return;
+    await deleteWorkoutEntry({ id, userId, dayId });
+    await loadWorkouts(userId, dayKey);
+
+    // refresh day totals
+    const { data: d, error: dayErr } = await supabase
+      .from('days')
+      .select('id, totals')
+      .eq('id', dayId)
+      .maybeSingle();
+    logSb('removeWorkout:reload day totals', dayErr, { dayId });
+    if (!dayErr && d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+  }
+
+  // Meal swap suggestion
+  async function suggestSwap() {
+    try {
+      setBusy(true);
+      const tip = await getSwapSuggestion({
+        calories: Math.max(0, remainingCalories),
+        protein: remainingProtein,
+        carbs: remainingCarbs,
+        fat: remainingFat,
+      });
+      setSwap(tip);
+    } catch {
+      setSwap('Could not fetch swap suggestion.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Per-row workout suggestions — tailored to the seed workout
+  async function suggestWorkoutForRow(seedTitle: string, rowId: string) {
+    if (!profile) return;
+    setBusy(true);
+    setSuggestForId(rowId);
+    setSuggestForTitle(seedTitle);
+    setWoSuggestions([]);
+    setSuggestOpen(true);
+
+    try {
+      const base = seedTitle.toLowerCase();
+
+      const isCardio =
+        /\b(run|jog|walk|row|cycle|bike|elliptical|stair|swim|treadmill|rowing|cycling|hike)\b/.test(base);
+
+      const isStrength =
+        /\b(weight|lift|strength|push|pull|squat|deadlift|bench|press|clean|snatch|curl|lunge|row)\b/.test(base);
+
+      const durMatch = base.match(/(\d{2,3})\s*(?:min|mins|minute|minutes)/);
+      const minutes = durMatch ? Math.max(10, Math.min(120, parseInt(durMatch[1], 10))) : 30;
+
+      let candidates: string[] = [];
+      if (isCardio && !isStrength) {
+        candidates = [
+          `${minutes} min brisk walk`,
+          `${Math.round(minutes * 0.8)} min interval run (hard/easy)`,
+          `${minutes} min rowing steady`,
+          `${minutes} min cycling moderate`,
+        ];
+      } else if (isStrength && !isCardio) {
+        candidates = [
+          `${minutes} min full-body compound lifts`,
+          `${minutes} min push/pull superset session`,
+          `${minutes} min strength training moderate`,
+          `${minutes} min kettlebell circuit`,
+        ];
+      } else {
+        candidates = [
+          `${minutes} min jog easy-moderate`,
+          `${minutes} min kettlebell circuit`,
+          `${minutes} min weight training moderate`,
+        ];
+      }
+
+      const scored: Array<{ title: string; kcal: number }> = [];
+      for (const c of candidates) {
+        try {
+          const kcal = await estimateWorkoutKcalSmart(c, profile);
+          scored.push({ title: c, kcal });
+        } catch { /* ignore single candidate errors */ }
+      }
+      setWoSuggestions(scored);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addSuggestedWorkout(title: string, kcal: number) {
+    if (!userId || !dayId) return;
+    setBusy(true);
+    try {
+      await upsertWorkoutEntry({
+        userId, dayId, kind: title, calories: Math.max(0, Math.round(kcal || 0)),
+        meta: { source: 'ai_suggestion' },
+      });
+      await loadWorkouts(userId, dayKey);
+      // refresh day totals
+      const { data: d, error: dayErr } = await supabase
+        .from('days')
+        .select('id, totals')
+        .eq('id', dayId)
+        .maybeSingle();
+      logSb('addSuggestedWorkout:reload day totals', dayErr, { dayId });
+      if (!dayErr && d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+
+      showToast(`Added: ${title} (+${kcal} kcal)`);
+      setSuggestOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function coachMealRow(m: MealRow) {
     try {
-      // Recompute remaining BEFORE this meal
       const before = {
         calories: Math.max(0, (currentGoal?.calories || 0) - ((totalsFromMeals.calories - (m.calories || 0)))),
         protein:  Math.max(0, (currentGoal?.protein  || 0) - ((totalsFromMeals.protein  - (m.protein  || 0)))),
@@ -546,63 +976,10 @@ const baselineTargets = ut
     }
   }
 
-  async function removeMeal(id: string) {
-    if (!userId || !dayId) return;
-    await deleteFoodEntry({ id, userId, dayId });
-
-    // Reload with entry_date + description mapping
-    const { data: foods } = await supabase
-      .from('food_entries')
-      .select('id, description, calories, protein, carbs, fat, created_at')
-      .eq('user_id', userId)
-      .eq('entry_date', todayStr())
-      .order('created_at', { ascending: false });
-
-    setMeals(((foods as any) || []).map((r: any) => ({
-      id: r.id,
-      meal_summary: r.description,
-      calories: r.calories,
-      protein: r.protein,
-      carbs: r.carbs,
-      fat: r.fat,
-    })));
-  }
-
-  async function suggestSwap() {
-    try {
-      setBusy(true);
-      const tip = await getSwapSuggestion({
-        calories: Math.max(0, remainingCalories),
-        protein: remainingProtein,
-        carbs: remainingCarbs,
-        fat: remainingFat,
-      });
-      setSwap(tip);
-    } catch {
-      setSwap('Could not fetch swap suggestion.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function openCoaching(text: string) {
     setCoachText(text || 'Could not fetch coaching tips.');
     setCoachOpen(true);
   }
-
-  const pct = (num: number, den: number) => {
-    if (!den || den <= 0) return 0;
-    const v = Math.round((num / den) * 100);
-    return Math.max(0, Math.min(100, v));
-  };
-
-  // For meters, use preview overlay on top of persisted allowance
-  const consumedPct = {
-    calories: pct(totalsWithPreview.calories, dailyAllowance),
-    protein:  pct(totalsWithPreview.protein,  currentGoal?.protein || 0),
-    carbs:    pct(totalsWithPreview.carbs,    currentGoal?.carbs   || 0),
-    fat:      pct(totalsWithPreview.fat,      currentGoal?.fat     || 0),
-  };
 
   function openQuickEdit() {
     setQCalories(currentGoal?.calories || 0);
@@ -626,7 +1003,7 @@ const baselineTargets = ut
     };
 
     try {
-      // Persist per-user (baseline)
+      // Persist per-user (baseline) — user_targets
       const up = await supabase
         .from('user_targets')
         .upsert({
@@ -639,20 +1016,22 @@ const baselineTargets = ut
           rationale: payload.rationale || null,
           updated_at: new Date().toISOString(),
         }, { onConflict: 'user_id' });
-      if (up.error) throw up.error;
+      logSb('saveQuickEdit: upsert user_targets', up.error, { userId });
 
       // Mirror into today's day row (authoritative for today/daily allowance)
-      const { data: d } = await supabase
+      const { data: d, error: dErr } = await supabase
         .from('days')
         .select('id')
         .eq('user_id', userId)
-        .eq('date', todayStr())
+        .eq('date', dateKeyChicago())
         .maybeSingle();
+      logSb('saveQuickEdit: fetch today day', dErr, { userId });
 
-      if (d?.id) {
-        await supabase.from('days')
+      if ((d as any)?.id) {
+        const upd = await supabase.from('days')
           .update({ targets: payload, updated_at: new Date().toISOString() })
-          .eq('id', d.id);
+          .eq('id', (d as any).id);
+        logSb('saveQuickEdit: update days.targets', upd.error, { dayId: (d as any).id });
         setDay(prev => prev ? { ...prev, targets: payload } : prev);
       }
 
@@ -671,6 +1050,8 @@ const baselineTargets = ut
       setQuickOpen(false);
       showToast('Your targets have been saved.');
     } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.error(e);
       alert(e?.message || 'Could not save targets.');
     }
   }
@@ -690,9 +1071,14 @@ const baselineTargets = ut
 
       <div className="mx-auto w-full max-w-md md:max-w-2xl lg:max-w-3xl px-4 pb-10 pt-4">
 
-        {/* Header + Edit */}
+        {/* Header + Edit + Personalized greeting */}
         <div className="flex items-center justify-between mb-3">
-          <h1 className="text-xl font-semibold">Today</h1>
+          <div className="flex flex-col">
+            <h1 className="text-xl font-semibold">Today</h1>
+            <span className="text-sm text-neutral-600 dark:text-neutral-300 mt-1">
+              Good {greeting}{userName ? `, ${userName}` : ''} — {phrase}
+            </span>
+          </div>
           <button
             onClick={openQuickEdit}
             className="text-sm font-medium rounded-lg px-3 py-1.5 border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-900"
@@ -711,9 +1097,9 @@ const baselineTargets = ut
         {/* Macro meters */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
           <MacroMeter title="Calories" used={totalsWithPreview.calories} goal={dailyAllowance} unit="kcal" />
-          <MacroMeter title="Protein"  used={totalsWithPreview.protein}  goal={currentGoal?.protein || 0} unit="g" />
-          <MacroMeter title="Carbs"    used={totalsWithPreview.carbs}    goal={currentGoal?.carbs   || 0} unit="g" />
-          <MacroMeter title="Fat"      used={totalsWithPreview.fat}      goal={currentGoal?.fat     || 0} unit="g" />
+          <MacroMeter title="Protein"  used={totalsWithPreview.protein}  goal={scaledProteinGoal} unit="g" />
+          <MacroMeter title="Carbs"    used={totalsWithPreview.carbs}    goal={scaledCarbGoal} unit="g" />
+          <MacroMeter title="Fat"      used={totalsWithPreview.fat}      goal={scaledFatGoal} unit="g" />
         </div>
 
         {/* Food eaten & Remaining */}
@@ -740,11 +1126,14 @@ const baselineTargets = ut
 
         {/* Meal input */}
         <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 space-y-2 bg-white dark:bg-neutral-900 mb-4">
-          <label className="text-sm font-medium">Log a meal</label>
+          <label className="text-sm font-medium">
+            Log a meal
+            <span className="ml-1 text-[11px] text-neutral-500">— be as specific as possible (ingredients, amounts, cooking method)</span>
+          </label>
           <textarea
             className="w-full border border-neutral-200 dark:border-neutral-800 rounded-xl p-2 text-sm bg-white dark:bg-neutral-950"
             rows={3}
-            placeholder="e.g., 1 bowl oatmeal with milk and banana; 2 eggs scrambled in olive oil"
+            placeholder="e.g., 1 bowl oatmeal (60g oats) with 200ml 2% milk + 1 banana; 2 eggs scrambled in 1 tsp olive oil"
             value={mealText}
             onChange={(e) => setMealText(e.target.value)}
           />
@@ -775,10 +1164,13 @@ const baselineTargets = ut
 
         {/* Workout input */}
         <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 space-y-2 bg-white dark:bg-neutral-900 mb-6">
-          <label className="text-sm font-medium">Log today’s workout</label>
+          <label className="text-sm font-medium">
+            Log today’s workout
+            <span className="ml-1 text-[11px] text-neutral-500">— be as specific as possible (duration, intensity, distance, sets/reps/weight)</span>
+          </label>
           <input
             className="w-full border border-neutral-200 dark:border-neutral-800 rounded-xl p-2 text-sm bg-white dark:bg-neutral-950"
-            placeholder="e.g., 30 min brisk walk; or 45 min weight training moderate"
+            placeholder="e.g., 45 min weight training (moderate: full-body); or 30 min jog @10 min/mi; or 5x5 squats 185lb + 3x12 bench 135lb"
             value={workoutText}
             onChange={(e) => setWorkoutText(e.target.value)}
           />
@@ -788,7 +1180,7 @@ const baselineTargets = ut
               disabled={busy || !workoutText.trim()}
               className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-60"
             >
-              AI Coach: Estimate burn
+              Estimate burn & add
             </button>
             {previewWorkoutKcal > 0 && (
               <div className="text-sm">Preview: +{previewWorkoutKcal} kcal</div>
@@ -822,11 +1214,11 @@ const baselineTargets = ut
                       className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800"
                       onClick={() => coachMealRow(m)}
                     >
-                      AI Coach: Coach
+                      AI Coach: Suggest Alternative
                     </button>
                     <button
                       className="px-2 py-1 rounded-lg bg-red-600 text-white dark:bg-red-500"
-                      onClick={() => removeMeal(m.id)}
+                      onClick={() => deleteFoodLocal(m.id)}
                     >
                       Remove
                     </button>
@@ -845,9 +1237,133 @@ const baselineTargets = ut
           </table>
         </div>
 
+        {/* Workouts table */}
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 overflow-x-auto bg-white dark:bg-neutral-900 mt-4">
+          <div className="px-3 pt-3 text-sm font-semibold">Workouts</div>
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-neutral-100 dark:bg-neutral-800 text-left">
+                <th className="p-2">Workout</th>
+                <th className="p-2">Burn (kcal)</th>
+                <th className="p-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {workouts.map((w) => (
+                <tr key={w.id} className="border-t border-neutral-200 dark:border-neutral-800">
+                  <td className="p-2">{w.kind}</td>
+                  <td className="p-2">{w.calories}</td>
+                  <td className="p-2 flex gap-2">
+                    <button
+                      className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800"
+                      onClick={() => startEditWorkout(w)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800"
+                      onClick={() => suggestWorkoutForRow(w.kind, w.id)}
+                    >
+                      Suggest workout
+                    </button>
+                    <button
+                      className="px-2 py-1 rounded-lg bg-red-600 text-white dark:bg-red-500"
+                      onClick={() => removeWorkout(w.id)}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {workouts.length === 0 && (
+                <tr>
+                  <td className="p-2 text-neutral-500 dark:text-neutral-400" colSpan={3}>No workouts logged yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
         {/* Coaching modal */}
         <Modal isOpen={coachOpen} onClose={() => setCoachOpen(false)} title="AI Coach Suggestions">
           <div>{coachText ? `• ${coachText}` : 'No suggestions.'}</div>
+        </Modal>
+
+        {/* Edit Workout modal (AI-only calories) */}
+        <Modal isOpen={editWoOpen} onClose={cancelEditWorkout} title="Edit workout">
+          <div className="space-y-3">
+            <div>
+              <div className="text-xs text-neutral-500 mb-1">
+                Workout <span className="ml-1 text-[11px]">— be as specific as possible (duration, intensity, distance, sets/reps/weight)</span>
+              </div>
+              <input
+                className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+                value={editWoKind}
+                onChange={(e) => setEditWoKind(e.target.value)}
+                placeholder="e.g., 30 min interval run (hard/easy); or 5x5 squats 185lb + 3x12 bench 135lb"
+              />
+            </div>
+
+            {/* Read-only AI calories */}
+            <div>
+              <div className="text-xs text-neutral-500 mb-1">Estimated burn (kcal)</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-medium">{Number.isFinite(editWoKcal) ? editWoKcal : 0}</div>
+                <button
+                  onClick={estimateEditWorkoutKcal}
+                  className="px-2 py-2 rounded-lg border border-neutral-200 dark:border-neutral-800 text-sm"
+                  type="button"
+                >
+                  Estimate calories
+                </button>
+              </div>
+              <div className="mt-1 text-[11px] text-neutral-500">AI will re-estimate automatically when you press Save.</div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={saveEditWorkout}
+                className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black"
+                disabled={busy || !editWoKind.trim()}
+              >
+                Save
+              </button>
+              <button
+                onClick={cancelEditWorkout}
+                className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </Modal>
+
+        {/* Suggest workout modal */}
+        <Modal isOpen={suggestOpen} onClose={() => setSuggestOpen(false)} title="Suggest workout">
+          <div className="space-y-2 text-sm">
+            {suggestForTitle && (
+              <div className="text-neutral-600 dark:text-neutral-300">
+                Based on: <span className="font-medium">{suggestForTitle}</span>
+              </div>
+            )}
+            {woSuggestions.length === 0 ? (
+              <div className="text-neutral-500 dark:text-neutral-400">Finding options…</div>
+            ) : (
+              <ul className="space-y-1">
+                {woSuggestions.map((s, i) => (
+                  <li key={i} className="flex items-center justify-between gap-2">
+                    <span>{s.title} — {s.kcal} kcal</span>
+                    <button
+                      className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800"
+                      onClick={() => addSuggestedWorkout(s.title, s.kcal)}
+                    >
+                      Use
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </Modal>
 
         {/* Quick Edit Targets modal */}
@@ -858,7 +1374,7 @@ const baselineTargets = ut
             <div className="flex items-center justify-between w-full">
               <span>Quick Edit Targets</span>
               <a
-                href={usesHash ? '#/targets' : '/targets'}
+                href={'#/targets'}
                 className="text-xs underline opacity-80 hover:opacity-100"
               >
                 Open full Targets page
@@ -992,7 +1508,9 @@ function Field({
 }) {
   return (
     <div>
-      <div className="text-xs text-neutral-500 mb-1">{label}{suffix ? ` (${suffix})` : ''}</div>
+      <div className="text-xs text-neutral-500 mb-1">
+        {label}{suffix ? ` (${suffix})` : ''}
+      </div>
       <input
         type="number"
         min={0}

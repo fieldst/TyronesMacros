@@ -122,9 +122,9 @@ export default function App() {
             <ModelSelector />
             {displayName ? (
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium truncate max-w-[10rem]" title={displayName}>
+                {/*<span className="text-sm font-medium truncate max-w-[10rem]" title={displayName}>
                   Hi, {displayName}
-                </span>
+                </span>*/}
                 <button
                   onClick={() => signOut()}
                   className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-gray-700 dark:text-gray-100"
