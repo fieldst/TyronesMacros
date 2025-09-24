@@ -14,6 +14,26 @@ import {
 } from '../services/openaiService';
 import { eventBus } from '../lib/eventBus';
 
+// ---- Snapshot to stabilize first paint and prevent flicker ----
+const SNAP_KEY = 'tm:lastDaySnapshot';
+type DaySnapshot = {
+  dayId: string;
+  date: string;
+  targets: any | null;
+  totals: { foodCals: number; workoutCals: number; allowance: number; remaining: number } | null;
+  updatedAt: number;
+};
+function loadSnapshot(): DaySnapshot | null {
+  try {
+    const raw = localStorage.getItem(SNAP_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveSnapshot(s: DaySnapshot) {
+  try { localStorage.setItem(SNAP_KEY, JSON.stringify(s)); } catch {}
+}
+
+
 import {
   upsertFoodEntry,
   deleteFoodEntry,
@@ -65,60 +85,33 @@ function logSb(where: string, error: any, extra?: Record<string, unknown>) {
 }
 
 // ---------- Greeting helpers ----------
-async function fetchDisplayName(userId: string): Promise<string> {
-  try {
-    // profiles.id path
-    const { data: byId, error: err1 } = await supabase
+async function fetchDisplayName(uid: string): Promise<string> {
+  // Try user_profiles first
+  let { data, error } = await supabase
+    .from('user_profiles')
+    .select('full_name, first_name, name, username')
+    .eq('user_id', uid)
+    .maybeSingle();
+
+  // Fallback: profiles (if you later add it)
+  if (error || !data) {
+    const res = await supabase
       .from('profiles')
       .select('full_name, first_name, name, username')
-      .eq('id', userId)
+      .or(`id.eq.${uid},user_id.eq.${uid}`)
       .maybeSingle();
-    if (!err1 && byId) {
-      const raw =
-        (byId as any).full_name ||
-        (byId as any).first_name ||
-        (byId as any).name ||
-        (byId as any).username ||
-        '';
-      if (raw) return String(raw);
-    }
-
-    // profiles.user_id path
-    const { data: byUserId, error: err2 } = await supabase
-      .from('profiles')
-      .select('full_name, first_name, name, username')
-      .eq('user_id', userId)
-      .maybeSingle();
-    if (!err2 && byUserId) {
-      const raw =
-        (byUserId as any).full_name ||
-        (byUserId as any).first_name ||
-        (byUserId as any).name ||
-        (byUserId as any).username ||
-        '';
-      if (raw) return String(raw);
-    }
-
-    // auth fallback
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
-    if (!authErr && authData?.user) {
-      const u = authData.user;
-      const meta = (u as any).user_metadata || {};
-      const raw =
-        meta.full_name ||
-        meta.name ||
-        meta.first_name ||
-        meta.given_name ||
-        (u.email ? u.email.split('@')[0] : '') ||
-        '';
-      if (raw) return String(raw);
-    }
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error('[fetchDisplayName] error', e);
+    data = res.data as any;
   }
-  return '';
+
+  const dn =
+    data?.first_name ||
+    data?.full_name  ||
+    data?.name       ||
+    data?.username   ||
+    '';
+  return dn || 'Friend';
 }
+
 
 function toFirstName(display: string): string {
   const trimmed = (display || '').trim();
@@ -246,6 +239,33 @@ export default function TodayView({
   const [workoutText, setWorkoutText] = useState('');
   const [meals, setMeals] = useState<MealRow[]>([]);
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
+  // NEW: hydration guard and totals coalescer
+  const booted = useRef(false);
+  const [hydrated, setHydrated] = useState(false);
+  const latestTotalsAt = useRef(0);
+  const raf = useRef<number | null>(null);
+  const pendingTotals = useRef<DayRow['totals'] | null>(null);
+  const applyTotals = (incoming: DayRow['totals']) => {
+    if (!incoming) return;
+    const now = Date.now();
+    if (now < latestTotalsAt.current) return;
+    pendingTotals.current = incoming;
+    if (raf.current != null) return;
+    raf.current = requestAnimationFrame(() => {
+      raf.current = null;
+      const t = pendingTotals.current;
+      pendingTotals.current = null;
+      if (!t) return;
+      latestTotalsAt.current = Date.now();
+      setDay(prev => {
+        if (!prev) return prev;
+        const merged = { ...prev, totals: t };
+        saveSnapshot({ dayId: prev.id, date: prev.date, targets: prev.targets, totals: t, updatedAt: latestTotalsAt.current });
+        return merged;
+      });
+    });
+  };
+
   const [busy, setBusy] = useState(false);
 
   // derived preview-only values (not persisted)
@@ -333,6 +353,8 @@ export default function TodayView({
 
   // -------- Bootstrap --------
   useEffect(() => {
+    if (booted.current) return; booted.current = true;
+
     (async () => {
       const id = await getCurrentUserId();
       setUserId(id);
@@ -347,9 +369,25 @@ export default function TodayView({
         setQLabel(String(ls.label || ''));
       }
 
+      console.log('Current User ID:', id);
+
+
       // Set Chicago day key
       const todayKey = dateKeyChicago();
       setDayKey(todayKey);
+      // Snapshot-first render (if matching date)
+      const snap = loadSnapshot();
+      if (snap && snap.date === todayKey && snap.dayId) {
+        setDay({ id: snap.dayId, date: snap.date, targets: snap.targets, totals: snap.totals } as any);
+        setDayId(String(snap.dayId));
+        latestTotalsAt.current = snap.updatedAt || 0;
+        const t = snap.targets || {};
+        setCurrentGoal({ calories: Number(t.calories||0), protein: Number(t.protein||0), carbs: Number(t.carbs||0), fat: Number(t.fat||0) });
+        if (t.label) setGoalLabel(String(t.label));
+        const why = (t.rationale ? String(t.rationale) : '') || null;
+        setGoalRationale(why);
+      }
+
 
       if (id) {
         // Personalized name
@@ -360,7 +398,8 @@ export default function TodayView({
         const todayDay = await ensureTodayDay(id);
         setDay(todayDay);
         setDayId(todayDay.id);
-
+        saveSnapshot({ dayId: todayDay.id, date: todayKey, targets: todayDay.targets, totals: todayDay.totals, updatedAt: Date.now() });
+        if (todayDay.totals) applyTotals(todayDay.totals);
         // Hydrate targets from day (authoritative)
         const dayTargets = todayDay.targets;
         if (dayTargets && typeof dayTargets === 'object') {
@@ -579,6 +618,34 @@ export default function TodayView({
       fat:      totalsFromMeals.fat      + (previewMeal.fat      || 0),
     };
   }, [totalsFromMeals, previewMeal]);
+
+
+  // Prefer today's DB targets; fall back to local targets; then last snapshot
+const SNAP_KEY = 'tm:lastDaySnapshot';
+function loadSnapshot() {
+  try { return JSON.parse(localStorage.getItem(SNAP_KEY) || 'null'); } catch { return null; }
+}
+const LS_TARGETS_KEY = 'tm:targets';
+function loadTargetsFromLocal() {
+  try { return JSON.parse(localStorage.getItem(LS_TARGETS_KEY) || 'null'); } catch { return null; }
+}
+
+const displayTargets = useMemo(() => {
+  const t =
+    (day?.targets) ||
+    loadTargetsFromLocal() ||
+    (loadSnapshot()?.targets) ||
+    {};
+  return {
+    calories: Number(t.calories || 0),
+    protein:  Number(t.protein  || 0),
+    carbs:    Number(t.carbs    || 0),
+    fat:      Number(t.fat      || 0),
+  };
+}, [day?.targets]);
+
+
+
 
   // Report consumed totals (without preview) upward if needed
   useEffect(() => {
@@ -1096,10 +1163,10 @@ export default function TodayView({
 
         {/* Macro meters */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-          <MacroMeter title="Calories" used={totalsWithPreview.calories} goal={dailyAllowance} unit="kcal" />
-          <MacroMeter title="Protein"  used={totalsWithPreview.protein}  goal={scaledProteinGoal} unit="g" />
-          <MacroMeter title="Carbs"    used={totalsWithPreview.carbs}    goal={scaledCarbGoal} unit="g" />
-          <MacroMeter title="Fat"      used={totalsWithPreview.fat}      goal={scaledFatGoal} unit="g" />
+          <MacroMeter title="Calories" used={totalsWithPreview.calories} goal={displayTargets.calories} unit="kcal" />
+          <MacroMeter title="Protein"  used={totalsWithPreview.protein}       goal={displayTargets.protein}  unit="g" />
+          <MacroMeter title="Carbs"    used={totalsWithPreview.carbs}         goal={displayTargets.carbs}    unit="g" />
+          <MacroMeter title="Fat"      used={totalsWithPreview.fat}           goal={displayTargets.fat}      unit="g" />
         </div>
 
         {/* Food eaten & Remaining */}
@@ -1454,20 +1521,25 @@ function MacroMeter({
   goal: number;
   unit: string;
 }) {
-  const pct = Math.max(0, Math.min(100, (used / Math.max(goal, 1)) * 100));
+  // Only compute % when a real goal exists; otherwise, show 0% and a dash for goal.
+  const hasGoal = Number(goal) > 0;
+  const pct = hasGoal ? Math.max(0, Math.min(100, (used / goal) * 100)) : 0;
+  const goalLabel = hasGoal ? Math.round(goal).toString() : '—';
+
   return (
     <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3">
       <div className="flex items-baseline justify-between mb-2">
         <h3 className="text-sm font-medium">{title}</h3>
         <span className="text-xs text-neutral-500 dark:text-neutral-400">
-          {Math.round(used)} / {Math.round(goal)} {unit}
+          {Math.round(used)} / {goalLabel} {unit}
         </span>
       </div>
       <div className="h-3 w-full rounded-full bg-neutral-100 dark:bg-neutral-900 overflow-hidden">
         <div
-          className="h-3 rounded-full bg-purple-600"
-          style={{ width: `${pct}%` }}
-        />
+  className="h-3 rounded-full bg-purple-600 transition-[width] duration-300"
+  style={{ width: `${pct}%` }}
+/>
+
       </div>
       <div className="mt-1 text-right text-[11px] text-neutral-500 dark:text-neutral-400">
         {Math.round(pct)}%
@@ -1475,6 +1547,8 @@ function MacroMeter({
     </div>
   );
 }
+
+
 
 function MiniCard({
   title,
@@ -1521,3 +1595,5 @@ function Field({
     </div>
   );
 }
+
+
