@@ -53,3 +53,12 @@ export function greetingForChicago(now: Date = new Date()): "Morning" | "Afterno
   if (hour < 18) return "Afternoon";
   return "Evening";
 }
+
+/** Parse a YYYY-MM-DD "day key" as a LOCAL date (no UTC shift). */
+export function parseDateKeyLocal(dateKey: string): Date {
+  // dateKey is "YYYY-MM-DD"
+  const [y, m, d] = dateKey.split("-").map(Number);
+  // This creates a local Date at midnight local time (no TZ skew)
+  return new Date(y, (m ?? 1) - 1, d ?? 1);
+}
+

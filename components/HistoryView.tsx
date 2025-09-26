@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { getCurrentUserId } from '../auth';
+import { localDateKey, parseDateKeyLocal } from "../lib/dateLocal";
 
 type Totals = {
   foodCals?: number;     // Eating (kcal)
@@ -29,15 +30,17 @@ type HistoryEntry = {
   totals: Totals | null;
 };
 
+
+
 function formatDate(dateStr: string) {
-  // dateStr is 'YYYY-MM-DD' (text)
-  const d = new Date(dateStr);
+  const d = parseDateKeyLocal(dateStr);
   return d.toLocaleDateString(undefined, {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
   });
 }
+
 
 function Metric({ title, value, unit }: { title: string; value: number | null | undefined; unit: string }) {
   const n = typeof value === 'number' ? Math.round(value) : null;
@@ -56,50 +59,54 @@ export default function HistoryView() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let alive = true;
+  let alive = true;
+  const todayKey = localDateKey(); // e.g., "2025-09-26" in local time
 
-    (async () => {
-      try {
-        const id = await getCurrentUserId();
-        if (!id) {
-          if (alive) setLoading(false);
-          return;
-        }
+  async function fetchHistory() {
+    const id = await getCurrentUserId();
+    if (!id) { if (alive) setLoading(false); return; }
 
-        // Pull days with both targets and totals
-        const { data, error } = await supabase
-          .from('days')
-          .select('id, date, targets, totals')
-          .eq('user_id', id)                    // keep if not relying purely on RLS
-          .order('date', { ascending: false }); // text 'YYYY-MM-DD' sorts fine
+    const { data, error } = await supabase
+      .from('days')
+      .select('id, date, targets, totals')
+      .eq('user_id', id)
+      .neq('date', todayKey)               // key line: skip today
+      .order('date', { ascending: false });
 
-        if (error) {
-          console.error('History fetch error:', error);
-          if (alive) setLoading(false);
-          return;
-        }
+    if (error) {
+      console.error('History fetch error:', error);
+      if (alive) setLoading(false);
+      return;
+    }
 
-        const mapped: HistoryEntry[] = (data ?? []).map((d: any) => ({
-          id: String(d.id),
-          date: String(d.date),
-          targets: d.targets ?? null,
-          totals: d.totals ?? null,
-        }));
+    if (!alive) return;
+    const mapped = (data ?? []).map((d: any) => ({
+      id: String(d.id),
+      date: String(d.date),
+      targets: d.targets ?? null,
+      totals: d.totals ?? null,
+    }));
+    setEntries(mapped);
+    setLoading(false);
+  }
 
-        if (alive) {
-          setEntries(mapped);
-          setLoading(false);
-        }
-      } catch (err) {
-        console.error('History load failed:', err);
-        if (alive) setLoading(false);
-      }
-    })();
+  fetchHistory();
 
-    return () => {
-      alive = false;
-    };
-  }, []);
+  // Schedule refresh just after midnight
+  const now = new Date();
+  const nextMidnight = new Date();
+  nextMidnight.setHours(24, 0, 0, 1500); // 00:00:01.500 buffer
+  const ms = nextMidnight.getTime() - now.getTime();
+
+  const timer = window.setTimeout(() => {
+    if (alive) fetchHistory();
+  }, Math.max(500, ms));
+
+  return () => {
+    alive = false;
+    window.clearTimeout(timer);
+  };
+}, []);
 
   if (loading) {
     return (
