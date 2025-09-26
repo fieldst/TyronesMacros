@@ -16,6 +16,16 @@ export function dateKeyChicago(d: Date = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * Returns YYYY-MM-DD string in the user’s local timezone,
+ * or in a specific IANA timezone if passed (e.g. "America/New_York").
+ */
+export function localDateKey(d: Date = new Date(), timeZone?: string): string {
+  const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return d.toLocaleDateString("en-CA", { timeZone: tz });
+}
+
+
 /** Milliseconds until the next Chicago midnight (accurate to < 60s). */
 export function msUntilNextChicagoMidnight(now: Date = new Date()): number {
   const nowKey = dateKeyChicago(now);

@@ -7,6 +7,7 @@ import { eventBus } from '../lib/eventBus';
 
 // ✅ Use your previously working local util first (no API dependency)
 import { suggestTargets, type SuggestTargetsResult } from '../utils/suggestTargets';
+import { localDateKey } from '../lib/dateLocal';
 
 // Optional secondary path: service calc (if you add it later)
 let svcGetTargetsSuggestion: null | ((args: any) => Promise<any>) = null;
@@ -51,7 +52,7 @@ type CachedSuggestion = {
 
 const LS_KEY = 'aiCoachTargetsSuggestion';
 const LS_PROFILE = 'aiCoachUserProfile';
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+function todayStr() { return localDateKey(); }
 
 // Parse possible ```json fenced responses
 function parseJsonFromText<T = any>(text: string): T | null {

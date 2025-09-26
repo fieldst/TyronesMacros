@@ -1,6 +1,7 @@
 // components/TodayView.tsx
 import { ensureTodayDay } from '../services/dayService';
 import { dateKeyChicago, msUntilNextChicagoMidnight, greetingForChicago } from '../lib/dateLocal';
+import { localDateKey } from '../lib/dateLocal';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Modal from './Modal';
@@ -149,7 +150,7 @@ function pickPhrase(daypart: 'Morning' | 'Afternoon' | 'Evening') {
   const list = PHRASES[daypart] || [];
   if (!list.length) return '';
   // deterministic selection per date + daypart to avoid flicker
-  const key = `${dateKeyChicago()}-${daypart}`;
+  const key = `${localDateKey()}-${daypart}`;
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
   return list[hash % list.length];
@@ -373,7 +374,9 @@ export default function TodayView({
 
 
       // Set Chicago day key
-      const todayKey = dateKeyChicago();
+      // AFTER
+      const todayKey = localDateKey(); // or localDateKey(undefined, user?.timezone)
+
       setDayKey(todayKey);
       // Snapshot-first render (if matching date)
       const snap = loadSnapshot();
@@ -476,7 +479,7 @@ export default function TodayView({
           .from('days')
           .select('id')
           .eq('user_id', userId)
-          .eq('date', dateKeyChicago())
+          .eq('date', localDateKey())
           .maybeSingle();
         logSb('targets:update fetch day', dErr, { userId });
 
@@ -517,7 +520,7 @@ export default function TodayView({
       midnightTimer.current = window.setTimeout(async () => {
         // At midnight: ensure new day exists, move UI to it
         await ensureTodayDay(userId);
-        const newKey = dateKeyChicago();
+        const newKey = localDateKey();
         setDayKey(newKey);
 
         // reload today’s `days` row and clear lists (new day starts empty)
@@ -1090,7 +1093,7 @@ const displayTargets = useMemo(() => {
         .from('days')
         .select('id')
         .eq('user_id', userId)
-        .eq('date', dateKeyChicago())
+        .eq('date', localDateKey())
         .maybeSingle();
       logSb('saveQuickEdit: fetch today day', dErr, { userId });
 

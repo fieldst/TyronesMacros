@@ -1,6 +1,7 @@
 // services/dayService.ts
 import { supabase } from '../supabaseClient';
 import { dateKeyChicago } from '../lib/dateLocal';
+import { localDateKey } from '../lib/dateLocal';
 
 type DayRow = {
   id: string;
@@ -23,7 +24,7 @@ function logSb(where: string, error: any, extra?: Record<string, unknown>) {
  * and zeros out totals.
  */
 export async function ensureTodayDay(userId: string): Promise<DayRow> {
-  const today = dateKeyChicago();
+  const today = localDateKey();
 
   // Already have today?
   const { data: existing, error: exErr } = await supabase
