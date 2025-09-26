@@ -102,17 +102,11 @@ export default function App() {
   function openSignUp() { setAuthMode('sign-up'); setAuthOpen(true) }
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
-      <header className="sticky top-0 z-10 bg-white/70 dark:bg-gray-800/70 backdrop-blur border-b border-gray-200 dark:border-gray-700">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold mr-auto">Tyrone’s Macros</h1>
-
-          {/* Nav */}
-          <nav className="flex flex-wrap gap-2 order-2 sm:order-1 w-full sm:w-auto">
-            <NavButton label="Today" active={tab === 'today'} onClick={() => setTab('today')} />
-            <NavButton label="History" active={tab === 'history'} onClick={() => setTab('history')} />
-            <NavButton label="Targets" active={tab === 'targets'} onClick={() => setTab('targets')} />
-          </nav>
+    <div className="min-h-[100svh] flex flex-col bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
+      <header className="sticky top-0 z-40 border-b border-zinc-200/60 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur">
+  <div className="mx-auto w-full max-w-[800px] px-4 h-14 flex items-center gap-3">
+    <h1 className="text-lg font-semibold tracking-tight mr-auto">Tyrone’s Macros</h1>
+   
 
           {/* Right controls */}
           <div className="flex flex-wrap gap-2 order-1 sm:order-2 w-full sm:w-auto items-center justify-end">
@@ -146,7 +140,9 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto p-4">
+      <main className="flex-1">
+      <div className="mx-auto w-full max-w-[800px] px-4 pt-4 pb-[72px]">
+
         {tab === 'today' && (
           <TodayView
             profile={{}}
@@ -155,6 +151,7 @@ export default function App() {
         )}
         {tab === 'history' && <HistoryView />}
         {tab === 'targets' && <TargetsView />}
+      </div>
       </main>
 
       {/* Optional coaching modal */}
@@ -176,6 +173,30 @@ export default function App() {
       </Modal>
 
       <RateBanner />
+      {/* Sticky bottom nav */}
+      <nav className="fixed bottom-0 inset-x-0 z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
+        <div className="mx-auto w-full max-w-[800px] grid grid-cols-3">
+          <button
+            onClick={() => setTab('today')}
+            className={`h-[56px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'today' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
+          >
+            <span>Today</span>
+          </button>
+          <button
+            onClick={() => setTab('history')}
+            className={`h-[56px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'history' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
+          >
+            <span>History</span>
+          </button>
+          <button
+            onClick={() => setTab('targets')}
+            className={`h-[56px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'targets' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
+          >
+            <span>Targets</span>
+          </button>
+        </div>
+      </nav>
+
     </div>
   )
 }

@@ -242,3 +242,29 @@ ${JSON.stringify(example)}`;
     throw new Error(e?.message || 'Could not parse AI coaching JSON.');
   }
 }
+export async function getDailyGreeting(name: string, dateKey: string, hour: number): Promise<string> {
+  const system =
+    'You are a concise, uplifting fitness & nutrition coach. ' +
+    'Write ONE short motivational sentence tailored to the user. ' +
+    'Keep it actionable, positive, and specific to daily adherence. ' +
+    'Constraints: 6–16 words, no emojis, no hashtags, no quotes, present-tense, at most one exclamation.';
+
+  const prompt =
+`User: ${name || 'Athlete'}
+Local date: ${dateKey}
+Local hour (0–23): ${hour}
+
+Write a single personalized line that motivates the user to stay on track today (food, movement, recovery). 
+Return ONLY the sentence without quotes or extra text.`;
+
+  const text = await (async () => {
+    // Reuse your existing server call helper
+    // Slightly warmer temperature for variety across days
+    // If you prefer more consistency, drop to 0.5
+    // @ts-ignore
+    return await callServer({ prompt, system, temperature: 0.8 });
+  })();
+
+  return (text || '').trim();
+}
+

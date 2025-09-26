@@ -1,6 +1,6 @@
 // components/TodayView.tsx
 import { ensureTodayDay } from '../services/dayService';
-import { dateKeyChicago, msUntilNextChicagoMidnight, greetingForChicago } from '../lib/dateLocal';
+import { dateKeyChicago, msUntilNextChicagoMidnight } from '../lib/dateLocal';
 import { localDateKey } from '../lib/dateLocal';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -12,6 +12,7 @@ import {
   getMealCoaching,
   getSwapSuggestion,
   getWorkoutCalories,
+  getDailyGreeting,
 } from '../services/openaiService';
 import { eventBus } from '../lib/eventBus';
 
@@ -73,6 +74,28 @@ type DayRow = {
   targets?: any;
   totals?: { foodCals: number; workoutCals: number; allowance: number; remaining: number };
 };
+function resolveDisplayNameFromAuth(user: any): string {
+  if (!user) return '';
+  const md: any = user.user_metadata ?? {};
+  const id0: any = (user.identities && user.identities[0]?.identity_data) ?? {};
+
+  // Try common metadata keys first
+  let name =
+    md.display_name ??
+    md.full_name ??
+    md.name ??
+    md.preferred_username ??
+    md.given_name ??
+    md.nickname ??
+    // Then check first identity (OAuth providers)
+    id0.full_name ??
+    id0.name ??
+    id0.given_name ??
+    // Fallback: email local-part
+    (user.email ? user.email.split('@')[0] : '');
+
+  return (name ?? '').toString().trim();
+}
 
 // 🔒 Local storage key for immediate hydration
 const LS_TARGETS_KEY = 'aiCoach.currentTargets';
@@ -110,7 +133,7 @@ async function fetchDisplayName(uid: string): Promise<string> {
     data?.name       ||
     data?.username   ||
     '';
-  return dn || 'Friend';
+  return dn || '';
 }
 
 
@@ -120,41 +143,23 @@ function toFirstName(display: string): string {
   const first = trimmed.split(/\s+/)[0];
   return first.charAt(0).toUpperCase() + first.slice(1);
 }
-
-// ---- rotating motivational phrases by daypart ----
-const PHRASES: Record<'Morning' | 'Afternoon' | 'Evening', string[]> = {
-  Morning: [
-    "Let’s set the tone today.",
-    "Small wins add up—start now.",
-    "Own the morning, own the day.",
-    "Consistency beats intensity.",
-    "Fuel smart, move with intent.",
-  ],
-  Afternoon: [
-    "Keep the momentum going.",
-    "Strong choices, strong results.",
-    "You’re closer than you think.",
-    "Stay locked in—finish strong.",
-    "Quality over quantity—always.",
-  ],
-  Evening: [
-    "Finish the day with purpose.",
-    "Recovery is part of progress.",
-    "One more good choice.",
-    "Reflect, reset, and rise again.",
-    "Proud of the effort today.",
-  ],
-};
-
-function pickPhrase(daypart: 'Morning' | 'Afternoon' | 'Evening') {
-  const list = PHRASES[daypart] || [];
-  if (!list.length) return '';
-  // deterministic selection per date + daypart to avoid flicker
-  const key = `${localDateKey()}-${daypart}`;
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
-  return list[hash % list.length];
+/** Browser-local greeting by hour */
+function greetingForLocal(now: Date = new Date()): 'Morning' | 'Afternoon' | 'Evening' {
+  const hr = now.getHours();
+  if (hr < 12) return 'Morning';
+  if (hr < 18) return 'Afternoon';
+  return 'Evening';
 }
+
+/** Milliseconds until the next local midnight */
+function msUntilNextLocalMidnight(): number {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(24, 0, 0, 0);
+  return next.getTime() - now.getTime();
+}
+
+
 
 /**
  * Smart calorie estimator for workouts:
@@ -319,9 +324,40 @@ export default function TodayView({
   const midnightTimer = useRef<number | null>(null);
 
   // Personalized greeting
-  const [greeting, setGreeting] = useState<'Morning' | 'Afternoon' | 'Evening'>(greetingForChicago());
-  const [phrase, setPhrase] = useState<string>(pickPhrase(greeting));
+  const [greeting, setGreeting] = useState<'Morning' | 'Afternoon' | 'Evening'>(greetingForLocal());
+  const [phrase, setPhrase] = useState<string>('');
+  // Resolve and keep the signed-in user's display name (from Auth metadata)
+React.useEffect(() => {
+  let canceled = false;
+
+  async function loadName() {
+    const { data: auth } = await supabase.auth.getUser();
+    const user = auth?.user;
+    if (!user) {
+      if (!canceled) setUserName('');
+      return;
+    }
+    const name = resolveDisplayNameFromAuth(user);
+    if (!canceled) setUserName(name);
+  }
+
+  loadName();
+
+  // Keep it updated if session/user metadata changes
+  const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+    const user = session?.user ?? null;
+    const name = resolveDisplayNameFromAuth(user);
+    if (!canceled) setUserName(name);
+  });
+
+  return () => {
+    canceled = true;
+    sub?.subscription?.unsubscribe?.();
+  };
+}, []);
+
   const [userName, setUserName] = useState<string>('');
+
 
   // --- Helpers to persist/load targets locally ---
   function persistTargetsLocally(payload: any) {
@@ -334,6 +370,7 @@ export default function TodayView({
       return JSON.parse(raw);
     } catch { return null; }
   }
+
 
   // Load workouts for a day (fixed select columns)
   async function loadWorkouts(uId: string, dateKey: string) {
@@ -503,12 +540,71 @@ export default function TodayView({
 
   // -------- Greeting refresh + phrase rotation --------
   useEffect(() => {
-    const tick = () => setGreeting(greetingForChicago());
+    const tick = () => setGreeting(greetingForLocal());
     tick(); // initial sync
     const id = window.setInterval(tick, 5 * 60 * 1000); // update every 5 minutes
     return () => window.clearInterval(id);
   }, []);
-  useEffect(() => { setPhrase(pickPhrase(greeting)); }, [greeting]);
+  
+ // AI-generated daily phrase (personalized). Cached by user+date; refreshes at local midnight.
+useEffect(() => {
+  let canceled = false;
+  let midnightTimer: number | undefined;
+
+  async function run() {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return;
+
+      const dayKey = localDateKey(); // local YYYY-MM-DD
+      const cacheKey = `dailyGreeting:${uid}:${dayKey}`;
+      const cached = localStorage.getItem(cacheKey);
+
+      if (cached && cached.trim()) {
+        if (!canceled) setPhrase(cached.trim());
+      } else {
+        const name = (userName || '').trim();
+        const hour = new Date().getHours();
+        const line = (await getDailyGreeting(name, dayKey, hour)).trim();
+        const clean = line.replace(/\s+/g, ' ').replace(/^["“]|["”]$/g, '');
+        if (!canceled && clean) {
+          setPhrase(clean);
+          try { localStorage.setItem(cacheKey, clean); } catch {}
+        }
+      }
+    } catch {
+      // silent fail — leave phrase as-is
+    }
+
+    // schedule refresh at local midnight
+    window.clearTimeout(midnightTimer);
+    midnightTimer = window.setTimeout(async () => {
+      // next day => let it fetch a fresh one
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        const uid = auth?.user?.id;
+        if (uid) {
+          // Clear yesterday’s cache key just in case (not required, but tidy)
+          const yesterday = new Date();
+          yesterday.setDate(yesterday.getDate() - 1);
+          const yKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+          localStorage.removeItem(`dailyGreeting:${uid}:${yKey}`);
+        }
+      } catch {}
+      run();
+    }, msUntilNextLocalMidnight());
+  }
+
+  run();
+
+  return () => {
+    canceled = true;
+    if (midnightTimer) window.clearTimeout(midnightTimer);
+  };
+// Re-run if the first name changes (e.g., user edits their profile)
+}, [userName]);
+
 
   // -------- Midnight rollover (America/Chicago) --------
   useEffect(() => {
