@@ -426,7 +426,7 @@ export default function TargetsView({
   /* UI                                                                 */
   /* ------------------------------------------------------------------ */
   return (
-    <div className="min-h-screen w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+    <div className="min-h-[100svh] w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
       <div className="mx-auto w-full max-w-md md:max-w-2xl lg:max-w-3xl px-4 py-6">
         <h1 className="text-xl font-semibold mb-4">Targets</h1>
 

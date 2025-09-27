@@ -1,19 +1,20 @@
 // App.tsx
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState } from "react";
 
-import Modal from './components/Modal'
-import NavButton from './components/NavButton'
-import TodayView from './components/TodayView'
-import HistoryView from './components/HistoryView'
-import TargetsView from './components/TargetsView'
-import RateBanner from './components/RateBanner'
-import ModelSelector from './components/ModelSelector'
-import AuthModal from './components/AuthModal'
+import Modal from "./components/Modal";
+import NavButton from "./components/NavButton";
+import TodayView from "./components/TodayView";
+import HistoryView from "./components/HistoryView";
+import TargetsView from "./components/TargetsView";
+import RateBanner from "./components/RateBanner";
+import ModelSelector from "./components/ModelSelector";
+import AuthModal from "./components/AuthModal";
+import { getDisplayName, onAuthChange, signOut } from "./auth";
+import { getDailyTargets, todayDateString } from "./db";
+import { eventBus } from "./lib/eventBus";
+import ThemeToggle from "./components/ThemeToggle";
+import { Home, History, Target } from "lucide-react";
 
-import { getDisplayName, onAuthChange, signOut } from './auth'
-import { getDailyTargets, todayDateString } from './db'
-import { eventBus } from './lib/eventBus'
-import ThemeToggle from './components/ThemeToggle'
 
 type Tab = 'today' | 'history' | 'targets'
 type MacroSet = { calories: number; protein: number; carbs: number; fat: number }
@@ -102,7 +103,8 @@ export default function App() {
   function openSignUp() { setAuthMode('sign-up'); setAuthOpen(true) }
 
   return (
-    <div className="min-h-[100svh] flex flex-col bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
+    <div className="min-h-[100svh] bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 pb-[calc(env(safe-area-inset-bottom)+80px)]">
+
       <header className="sticky top-0 z-40 border-b border-zinc-200/60 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur">
   <div className="mx-auto w-full max-w-[800px] px-4 h-14 flex items-center gap-3">
     <h1 className="text-lg font-semibold tracking-tight mr-auto">Tyrone’s Macros</h1>
@@ -174,28 +176,35 @@ export default function App() {
 
       <RateBanner />
       {/* Sticky bottom nav */}
-      <nav className="fixed bottom-0 inset-x-0 z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
-        <div className="mx-auto w-full max-w-[800px] grid grid-cols-3">
-          <button
-            onClick={() => setTab('today')}
-            className={`h-[56px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'today' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
-          >
-            <span>Today</span>
-          </button>
-          <button
-            onClick={() => setTab('history')}
-            className={`h-[56px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'history' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
-          >
-            <span>History</span>
-          </button>
-          <button
-            onClick={() => setTab('targets')}
-            className={`h-[56px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'targets' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
-          >
-            <span>Targets</span>
-          </button>
-        </div>
-      </nav>
+         <nav className="fixed bottom-0 inset-x-0 z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
+            <div className="mx-auto w-full max-w-[800px] grid grid-cols-3">
+        <button
+  onClick={() => setTab('today')}
+  className={`h-[64px] md:h-[72px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'today' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
+>
+  <Home size={20} />
+  <span>Today</span>
+</button>
+
+<button
+  onClick={() => setTab('history')}
+  className={`h-[64px] md:h-[72px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'history' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
+>
+  <History size={20} />
+  <span>History</span>
+</button>
+
+<button
+  onClick={() => setTab('targets')}
+  className={`h-[64px] md:h-[72px] flex flex-col items-center justify-center gap-1 text-xs ${tab === 'targets' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
+>
+  <Target size={20} />
+  <span>Targets</span>
+</button>
+
+      </div>
+    </nav>
+
 
     </div>
   )

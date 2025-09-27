@@ -30,7 +30,7 @@ export default function AppShell({ title = "Tyrone’s Macros", children }: Prop
       </header>
 
       {/* Main scroll area */}
-      <main className="flex-1">
+      <main className="flex-1 pb-[calc(env(safe-area-inset-bottom)+80px)]">
         <div className="mx-auto w-full max-w-[800px] px-4 pb-[72px] pt-4">
           {children}
         </div>
@@ -45,8 +45,8 @@ export default function AppShell({ title = "Tyrone’s Macros", children }: Prop
               <button
                 key={t.key}
                 onClick={() => nav(t.to)}
-                className={`h-[56px] flex flex-col items-center justify-center gap-1 text-xs
-                  ${active ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
+                className={`h-[64px] md:h-[72px] flex flex-col items-center justify-center gap-1 text-xs ${active ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}
+
               >
                 {t.icon}
                 <span>{t.label}</span>

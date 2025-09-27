@@ -1225,7 +1225,7 @@ const displayTargets = useMemo(() => {
   if (loading) return <div className="text-gray-900 dark:text-gray-100">Loading…</div>;
 
   return (
-    <div className="min-h-screen w-full bg-white dark:bg-neutral-950 text-gray-900 dark:text-neutral-100">
+    <div className="min-h-[100svh] w-full bg-white dark:bg-neutral-950 text-gray-900 dark:text-neutral-100">
       {/* Toast */}
       {toast && (
         <div className="fixed left-1/2 top-4 -translate-x-1/2 z-50">
