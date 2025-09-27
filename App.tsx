@@ -7,7 +7,6 @@ import TodayView from "./components/TodayView";
 import HistoryView from "./components/HistoryView";
 import TargetsView from "./components/TargetsView";
 import RateBanner from "./components/RateBanner";
-import ModelSelector from "./components/ModelSelector";
 import AuthModal from "./components/AuthModal";
 import { getDisplayName, onAuthChange, signOut } from "./auth";
 import { getDailyTargets, todayDateString } from "./db";
@@ -103,7 +102,7 @@ export default function App() {
   function openSignUp() { setAuthMode('sign-up'); setAuthOpen(true) }
 
   return (
-    <div className="min-h-[100svh] bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 pb-[calc(env(safe-area-inset-bottom)+80px)]">
+    <div className="min-h-[100dvh] bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 pb-[calc(env(safe-area-inset-bottom)+80px)]">
 
       <header className="sticky top-0 z-40 border-b border-zinc-200/60 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur">
   <div className="mx-auto w-full max-w-[800px] px-4 h-14 flex items-center gap-3">
@@ -115,7 +114,7 @@ export default function App() {
             {/* 🔘 Dark/Light toggle */}
             <ThemeToggle />
 
-            <ModelSelector />
+            
             {displayName ? (
               <div className="flex items-center gap-2">
                 {/*<span className="text-sm font-medium truncate max-w-[10rem]" title={displayName}>
@@ -176,7 +175,7 @@ export default function App() {
 
       <RateBanner />
       {/* Sticky bottom nav */}
-         <nav className="fixed bottom-0 inset-x-0 z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
+         <nav className="fixed inset-x-0 bottom-[env(safe-area-inset-bottom)] z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
             <div className="mx-auto w-full max-w-[800px] grid grid-cols-3">
         <button
   onClick={() => setTab('today')}

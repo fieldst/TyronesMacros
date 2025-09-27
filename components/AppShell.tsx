@@ -19,15 +19,16 @@ export default function AppShell({ title = "Tyrone’s Macros", children }: Prop
   ];
 
   return (
-    <div className="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50 min-h-[100svh] flex flex-col">
+    <div className="bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50 min-h-[100dvh] flex flex-col">
       {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-zinc-200/60 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur">
-        <div className="mx-auto w-full max-w-[800px] px-4 py-3 flex items-center justify-between">
-          <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-          {/* Room for a small status or profile dot later */}
-          <div className="text-xs opacity-70">AI Coach</div>
-        </div>
-      </header>
+      <header className="sticky top-0 z-40 border-b border-zinc-200/60 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur pt-[env(safe-area-inset-top)]">
+  <div className="mx-auto w-full max-w-[800px] px-4 py-2 flex items-center justify-between">
+    <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+    {/* Right side (keep minimal to avoid wrapping on small screens) */}
+    <div className="text-xs opacity-70">AI Coach</div>
+  </div>
+</header>
+
 
       {/* Main scroll area */}
       <main className="flex-1 pb-[calc(env(safe-area-inset-bottom)+80px)]">
@@ -37,7 +38,7 @@ export default function AppShell({ title = "Tyrone’s Macros", children }: Prop
       </main>
 
       {/* Sticky bottom nav */}
-      <nav className="fixed bottom-0 inset-x-0 z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
+      <<nav className="fixed inset-x-0 bottom-[env(safe-area-inset-bottom)] z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
         <div className="mx-auto w-full max-w-[800px] grid grid-cols-4">
           {tabs.map(t => {
             const active = pathname === t.to;
