@@ -1,25 +1,57 @@
 // api/generate.ts
-
-import OpenAI from 'openai'
-
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! })
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import OpenAI from 'openai';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') return res.status(405).json({ msg: 'Method Not Allowed' })
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ success: false, error: 'Method not allowed' });
+  }
+
   try {
-    const { prompt, system, model } = req.body ?? {}
+    const {
+      prompt = '',
+      system = '',
+      model = 'gpt-4o-mini',
+      temperature = 0.7,
+      expectJson = false,
+      jsonSchema,
+    } = (req.body ?? {}) as {
+      prompt?: string;
+      system?: string;
+      model?: string;
+      temperature?: number;
+      expectJson?: boolean;
+      jsonSchema?: unknown;
+    };
 
-    const out = await client.chat.completions.create({
-      model: model ?? 'gpt-4o-mini',
-      messages: [
-        ...(system ? [{ role: 'system', content: system }] : []),
-        { role: 'user', content: prompt ?? '' }
-      ],
-    })
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    res.status(200).json({ text: out.choices[0]?.message?.content ?? '' })
-  } catch (e: any) {
-    console.error(e)
-    res.status(500).json({ msg: 'Server error', detail: String(e?.message ?? e) })
+    // Type the messages with literal roles so TypeScript is happy.
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: 'system', content: system },
+      { role: 'user', content: prompt },
+    ];
+
+    const params: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
+      model,
+      messages,
+      temperature,
+      ...(expectJson
+        ? { response_format: { type: 'json_object' as const } }
+        : {}),
+    };
+
+    // (jsonSchema) is optional; leaving out tool forcing here to keep things simple/robust.
+
+    const out = await client.chat.completions.create(params);
+    const text = out.choices?.[0]?.message?.content ?? '';
+
+    // Standard shape your client expects
+    res.setHeader('Content-Type', 'application/json');
+    return res.status(200).json({ success: true, data: { text } });
+  } catch (err: any) {
+    console.error('[/api/generate] error:', err?.stack || err);
+    return res.status(500).json({ success: false, error: 'Internal error' });
   }
 }

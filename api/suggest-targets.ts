@@ -1,6 +1,7 @@
 // /api/suggest-targets.ts
 
 import OpenAI from 'openai';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
