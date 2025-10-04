@@ -31,7 +31,7 @@ function extractFirstJson(text: string): any {
   throw new Error('Unable to parse JSON from model response');
 }
 
-/* ---------------- Internal helpers ---------------- */
+/* ---------------- internal helpers ---------------- */
 
 async function fetchJSON(url: string, body: any) {
   const res = await fetch(url, {
@@ -90,9 +90,9 @@ async function callServer(body: any): Promise<string> {
 /* ================= Features ================= */
 
 /**
- * Works in dev and prod without server changes:
- * - Dev: /api/estimate exists on your local API via Vite proxy
- * - Prod: if /api/estimate is missing on Vercel, fallback to /api/estimate-macros
+ * Works in dev and prod without changing server code:
+ * - Dev: hits /api/estimate (your local route)
+ * - Prod: if /api/estimate returns 404, falls back to /api/estimate-macros
  */
 export async function estimateMacrosForMeal(
   mealText: string,
@@ -100,10 +100,9 @@ export async function estimateMacrosForMeal(
 ): Promise<{ macros: MacroSet; note: string }> {
 
   // 1) Primary: /api/estimate
-  {
+  try {
     const { ok, status, payload, raw } = await fetchJSON('/api/estimate', { description: mealText });
     if (ok && payload?.success !== false) {
-      // expected shape: { success: true, data: { totals: { calories, protein, carbs, fat } } }
       const t = payload?.data?.totals ?? payload?.totals;
       if (t && Number.isFinite(+t.calories)) {
         const macros: MacroSet = {
@@ -114,17 +113,19 @@ export async function estimateMacrosForMeal(
         };
         return { macros, note: 'AI estimate' };
       }
-      // wrong shape? fall through
-    } else {
-      // Only warn if not a 404 (404 is expected in prod when route doesn't exist)
-      if (status !== 404) {
-        const msg = payload?.error || payload?.message || raw || `HTTP ${status}`;
-        console.warn('API /api/estimate error (will fallback):', { status, msg, payload });
-      }
+      // wrong shape -> fall through to fallback
+      console.warn('API /api/estimate returned unexpected shape; falling back.', { payload });
+    } else if (status !== 404) {
+      // non-404 error -> log, then fallback
+      const msg = payload?.error || payload?.message || raw || `HTTP ${status}`;
+      console.warn('API /api/estimate error (will fallback):', { status, msg });
     }
+  } catch (e) {
+    // network/parse error -> fallback
+    console.warn('API /api/estimate threw (will fallback):', e);
   }
 
-  // 2) Fallback: /api/estimate-macros (present in your Vercel repo)
+  // 2) Fallback: /api/estimate-macros (present on Vercel)
   {
     const { ok, status, payload, raw } = await fetchJSON('/api/estimate-macros', { text: mealText });
     if (!ok || payload?.success === false) {
@@ -133,7 +134,6 @@ export async function estimateMacrosForMeal(
       throw new Error(msg);
     }
 
-    // Accept common shapes and normalize
     const t =
       payload?.data?.totals ??
       payload?.totals ??
@@ -193,7 +193,7 @@ Generate a motivational line that feels different from previous days.`;
   }
 }
 
-/* ====== Coaching (hardened) ====== */
+/* ====== coaching ====== */
 
 function normalizeAlternatives(input: any): { item: string; why: string }[] {
   if (!Array.isArray(input)) return [];
@@ -299,7 +299,7 @@ Generate a motivational line that feels different from previous days.`;
   return (line || '').toString();
 }
 
-// --- Step 2: Plan Week ---------------------------------
+/* --- plan week --- */
 export type PlanWeekOptions = {
   goal: 'cut'|'lean'|'maintain'|'bulk';
   style: 'HIIT'|'cardio'|'strength+cardio'|'CrossFit';

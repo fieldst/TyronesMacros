@@ -3,21 +3,12 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
-/**
- * Local dev:
- *  - front-end : 5173 (default)
- *  - API proxy : VITE_API_PORT || 3002
- *
- * Production:
- *  - Vercel serves from "/" -> base MUST be "/"
- *  - If you deploy to GitHub Pages, set VITE_USE_GHPAGES=1 when building,
- *    which switches base to "/TyronesMacros/"
- */
-const API_PORT = process.env.VITE_API_PORT || '3002';
+const API_PORT = process.env.VITE_API_PORT || '3002';   // your local dev API
 const FRONTEND_PORT = process.env.VITE_PORT || '5173';
 const USE_GHPAGES = process.env.VITE_USE_GHPAGES === '1';
 
 export default defineConfig({
+  // On Vercel the app is served from root; only switch for GH Pages when you set VITE_USE_GHPAGES=1
   base: USE_GHPAGES ? '/TyronesMacros/' : '/',
   build: { outDir: 'dist', emptyOutDir: true },
   plugins: [
@@ -33,7 +24,7 @@ export default defineConfig({
         theme_color: '#0d4b78',
         background_color: '#ffffff',
         display: 'standalone',
-        start_url: '/', // important for PWA on Vercel
+        start_url: '/', // important for Vercel/PWA
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
