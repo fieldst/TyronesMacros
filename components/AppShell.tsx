@@ -38,7 +38,7 @@ export default function AppShell({ title = "Tyrone’s Macros", children }: Prop
       </main>
 
       {/* Sticky bottom nav */}
-      <<nav className="fixed inset-x-0 bottom-[env(safe-area-inset-bottom)] z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
+      <nav className="fixed inset-x-0 bottom-[env(safe-area-inset-bottom)] z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
         <div className="mx-auto w-full max-w-[800px] grid grid-cols-4">
           {tabs.map(t => {
             const active = pathname === t.to;

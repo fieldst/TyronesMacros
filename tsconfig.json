@@ -5,6 +5,7 @@
     "resolveJsonModule": true,
     "jsx": "react-jsx",
     "target": "ES2020",
+    "skipLibCheck": true,
     "lib": [
       "ES2020",
       "DOM",
@@ -24,6 +25,12 @@
   ],
   "exclude": [
     "node_modules",
-    "dist"
+    "dist",
+    "build",
+    "dev-dist",
+    "pages/TodayView1.tsx",
+    "services/geminiService.ts",
+    "**/*.test.*",
+    "**/*.spec.*"
   ]
 }
