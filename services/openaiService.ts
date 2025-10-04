@@ -31,11 +31,24 @@ function extractFirstJson(text: string): any {
   throw new Error('Unable to parse JSON from model response');
 }
 
-// services/openaiService.ts
+/* ---------------- Internal helpers ---------------- */
 
+async function fetchJSON(url: string, body: any) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const raw = await res.text();
+  let payload: any = null;
+  try { payload = JSON.parse(raw); } catch { payload = { text: raw }; }
+  return { ok: res.ok, status: res.status, payload, raw };
+}
+
+// Server text generation (shared)
 async function callServer(body: any): Promise<string> {
   const model = getSelectedModel();
-  const url = '/api/generate'; // Vite proxy points to backend
+  const url = '/api/generate'; // dev: Vite proxy -> local API; prod: Vercel function
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 25_000);
@@ -48,71 +61,95 @@ async function callServer(body: any): Promise<string> {
       signal: ac.signal,
     });
 
-    // Rate limit headers -> banner (best-effort)
+    // best-effort rate banner
     try {
       const limit = Number(res.headers.get('X-RateLimit-Limit') || 0);
       const remaining = Number(res.headers.get('X-RateLimit-Remaining') || 0);
       const reset = Number(res.headers.get('X-RateLimit-Reset') || 0);
       if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('rate-update', { detail: { limit, remaining, reset } })
-        );
+        window.dispatchEvent(new CustomEvent('rate-update', { detail: { limit, remaining, reset } }));
       }
     } catch {}
 
-    // Always read as text first so we can debug raw responses
     const raw = await res.text();
     let payload: any = null;
-    try {
-      payload = JSON.parse(raw);
-    } catch {
-      payload = { text: raw };
-    }
+    try { payload = JSON.parse(raw); } catch { payload = { text: raw }; }
 
     if (!res.ok || payload?.success === false) {
-      const msg =
-        payload?.error || payload?.message || raw || `HTTP ${res.status}`;
-      console.error('API /api/generate error:', {
-        status: res.status,
-        msg,
-        payload,
-      });
+      const msg = payload?.error || payload?.message || raw || `HTTP ${res.status}`;
+      console.error('API /api/generate error:', { status: res.status, msg, payload });
       throw new Error(msg);
     }
 
-    // ✅ FIX: return only the text string
     return payload?.data?.text ?? '';
   } finally {
     clearTimeout(timer);
   }
 }
 
-
 /* ================= Features ================= */
 
-export async function estimateMacrosForMeal(mealText: string, profile: Profile): Promise<{ macros: MacroSet; note: string }> {
-  const res = await fetch('/api/estimate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ description: mealText }),
-  });
+/**
+ * Works in dev and prod without server changes:
+ * - Dev: /api/estimate exists on your local API via Vite proxy
+ * - Prod: if /api/estimate is missing on Vercel, fallback to /api/estimate-macros
+ */
+export async function estimateMacrosForMeal(
+  mealText: string,
+  _profile: Profile
+): Promise<{ macros: MacroSet; note: string }> {
 
-  const raw = await res.text();
-  let payload: any = null;
-  try { payload = JSON.parse(raw); } catch {}
-
-  if (!res.ok || payload?.success === false) {
-    const msg = payload?.error || payload?.message || raw || `HTTP ${res.status}`;
-    console.error('API /api/estimate error:', { status: res.status, msg, payload });
-    throw new Error(msg);
+  // 1) Primary: /api/estimate
+  {
+    const { ok, status, payload, raw } = await fetchJSON('/api/estimate', { description: mealText });
+    if (ok && payload?.success !== false) {
+      // expected shape: { success: true, data: { totals: { calories, protein, carbs, fat } } }
+      const t = payload?.data?.totals ?? payload?.totals;
+      if (t && Number.isFinite(+t.calories)) {
+        const macros: MacroSet = {
+          calories: Math.max(0, Math.round(+t.calories || 0)),
+          protein: Math.max(0, Math.round(+t.protein || 0)),
+          carbs:   Math.max(0, Math.round(+t.carbs   || 0)),
+          fat:     Math.max(0, Math.round(+t.fat     || 0)),
+        };
+        return { macros, note: 'AI estimate' };
+      }
+      // wrong shape? fall through
+    } else {
+      // Only warn if not a 404 (404 is expected in prod when route doesn't exist)
+      if (status !== 404) {
+        const msg = payload?.error || payload?.message || raw || `HTTP ${status}`;
+        console.warn('API /api/estimate error (will fallback):', { status, msg, payload });
+      }
+    }
   }
 
-  // ✅ Backend already returns {items, totals}, so unwrap and map
-  const totals = payload?.data?.totals ?? { calories: 0, protein: 0, carbs: 0, fat: 0 };
+  // 2) Fallback: /api/estimate-macros (present in your Vercel repo)
+  {
+    const { ok, status, payload, raw } = await fetchJSON('/api/estimate-macros', { text: mealText });
+    if (!ok || payload?.success === false) {
+      const msg = payload?.error || payload?.message || raw || `HTTP ${status}`;
+      console.error('API /api/estimate-macros error:', { status, msg, payload });
+      throw new Error(msg);
+    }
 
-  return { macros: totals, note: 'AI estimate' };
+    // Accept common shapes and normalize
+    const t =
+      payload?.data?.totals ??
+      payload?.totals ??
+      (payload?.data && 'calories' in payload?.data ? payload?.data : null) ??
+      null;
+
+    const totals = t ?? { calories: 0, protein: 0, carbs: 0, fat: 0 };
+    const macros: MacroSet = {
+      calories: Math.max(0, Math.round(+totals.calories || 0)),
+      protein: Math.max(0, Math.round(+totals.protein || 0)),
+      carbs:   Math.max(0, Math.round(+totals.carbs   || 0)),
+      fat:     Math.max(0, Math.round(+totals.fat     || 0)),
+    };
+    return { macros, note: 'AI estimate' };
+  }
 }
-
 
 export async function getWorkoutCalories(workout: string, profile: Profile): Promise<{ total_calories: number }> {
   const schema = { name: 'workout_energy', schema: { type: 'object', properties: { total_calories: { type: 'number' }, assumptions: { type: 'string' } }, required: ['total_calories'], additionalProperties: false }, strict: true };
@@ -147,7 +184,13 @@ export async function getTargetOptions(profile: Profile, goal: Goal): Promise<{ 
   const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
 Generate a motivational line that feels different from previous days.`;
   const text = await callServer({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 });
-  try { const parsed = extractFirstJson(text); if (!Array.isArray(parsed?.options)) throw new Error('Bad shape'); return parsed as { options: TargetOption[]; notes: string }; } catch { return { notes: 'AI options unavailable', options: [] }; }
+  try {
+    const parsed = extractFirstJson(text);
+    if (!Array.isArray(parsed?.options)) throw new Error('Bad shape');
+    return parsed as { options: TargetOption[]; notes: string };
+  } catch {
+    return { notes: 'AI options unavailable', options: [] };
+  }
 }
 
 /* ====== Coaching (hardened) ====== */
@@ -155,7 +198,6 @@ Generate a motivational line that feels different from previous days.`;
 function normalizeAlternatives(input: any): { item: string; why: string }[] {
   if (!Array.isArray(input)) return [];
   const out: { item: string; why: string }[] = [];
-
   for (const it of input) {
     if (it && typeof it === 'object') {
       const item = typeof it.item === 'string' ? it.item.trim() : '';
@@ -163,7 +205,6 @@ function normalizeAlternatives(input: any): { item: string; why: string }[] {
       if (item && why) { out.push({ item, why }); continue; }
     }
     if (typeof it === 'string') {
-      // Try to split "Item — why" | "Item - why" | "Item: why"
       const parts = it.split(/—|-|:/);
       if (parts.length >= 2) {
         const item = parts[0].trim();
@@ -184,7 +225,6 @@ export async function getMealCoaching(
   const system =
     'You are a concise nutrition coach. Offer practical, budget-conscious tips rooted in basic nutrition. Keep answers specific and short.';
 
-  // Strong schema + explicit example to anchor output
   const schema = {
     name: 'meal_coaching',
     schema: {
@@ -217,22 +257,10 @@ export async function getMealCoaching(
     strict: true
   } as const;
 
-  const example = {
-    suggestions: [
-      "Choose grilled over fried to reduce fats",
-      "Add ~25g lean protein to better hit targets"
-    ],
-    better_alternatives: [
-      { item: "Grilled chicken wrap (no mayo)", why: "keeps protein, cuts fat" }
-    ]
-  };
-
   const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
 Generate a motivational line that feels different from previous days.`;
 
-  const text = await callServer({
-    prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2
-  });
+  const text = await callServer({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 });
 
   try {
     const parsed = extractFirstJson(text);
@@ -241,8 +269,6 @@ Generate a motivational line that feels different from previous days.`;
       : [];
 
     let alts = normalizeAlternatives(parsed?.better_alternatives);
-
-    // If model still failed the shape, attempt recovery by scraping from a common fallback field
     if (alts.length === 0 && Array.isArray(parsed?.alternatives)) {
       alts = normalizeAlternatives(parsed.alternatives);
     }
@@ -252,6 +278,7 @@ Generate a motivational line that feels different from previous days.`;
     throw new Error(e?.message || 'Could not parse AI coaching JSON.');
   }
 }
+
 export async function getDailyGreeting(
   name: string,
   dateKey: string,
@@ -268,7 +295,6 @@ export async function getDailyGreeting(
   const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
 Generate a motivational line that feels different from previous days.`;
 
-  // callServer already returns a plain string
   const line = await callServer({ prompt, system, temperature: 0.7 });
   return (line || '').toString();
 }
@@ -293,4 +319,3 @@ export async function planWeek(opts: PlanWeekOptions) {
   if(!resp.ok) throw new Error('Failed to plan week');
   return await resp.json();
 }
-
