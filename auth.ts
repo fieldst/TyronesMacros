@@ -52,6 +52,7 @@ export function onAuthChange(cb: (user: User | null) => void) {
 export async function getDisplayName(): Promise<string | null> {
   const u = await getCurrentUser()
   if (!u) return null
+  // Get name from user_metadata (set during signup) or fallback to email
   const name = (u.user_metadata as any)?.full_name as string | undefined
   return (name?.trim() || u.email || null)
 }

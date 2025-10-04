@@ -3,6 +3,21 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Prevent zoom and improve touch responsiveness */
+* {
+  touch-action: manipulation;
+}
+
+/* Ensure inputs don't cause zoom on iOS */
+input, textarea, select {
+  font-size: 16px !important;
+}
+
+/* Prevent layout shift during hydration */
+.skeleton {
+  @apply animate-pulse bg-gray-200 dark:bg-gray-700 rounded;
+}
+
 /* Cards */
 .container-card { @apply bg-white rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.08)] border border-gray-100; }
 

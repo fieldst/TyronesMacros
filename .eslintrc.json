@@ -1,0 +1,16 @@
+{
+  "extends": ["eslint:recommended", "@typescript-eslint/recommended"],
+  "rules": {
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "group": ["pg", "mysql", "mysql2", "mongodb", "mongoose", "redis", "ioredis", "net", "tls", "amqplib"],
+            "message": "Direct database drivers and raw sockets are forbidden in WebContainer. Use @supabase/supabase-js instead."
+          }
+        ]
+      }
+    ]
+  }
+}

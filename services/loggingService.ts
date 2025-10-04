@@ -1,154 +1,163 @@
 // services/loggingService.ts
-import { supabase } from '../supabaseClient';
-import { eventBus } from '../lib/eventBus';
-import { recalcAndPersistDay } from '../lib/recalcDay';
+import { supabase } from '../supabaseClient'
+import { dateKeyChicago } from '../lib/dateLocal'
+import { recalcAndPersistDay } from '../lib/recalcDay'
 
-export type FoodEntryUpsert = {
-  id?: string;
-  userId: string;
-  dayId: string;
-  name: string;
-  calories: number;
-  protein?: number;
-  carbs?: number;
-  fat?: number;
-  meta?: { source?: string } | any;
-};
-
-export type WorkoutEntryUpsert = {
-  id?: string;
-  userId: string;
-  dayId: string;
-  kind: string;
-  calories: number;
-  duration_min?: number;
-  intensity?: string;
-  meta?: { source?: string; intensity?: string } | any;
-};
-
-type Totals = { foodCals: number; workoutCals: number; allowance: number; remaining: number };
-
-async function getBaseTargetCalories(dayId: string, userId: string): Promise<number> {
-  const { data: day } = await supabase
-    .from('days')
-    .select('targets')
-    .eq('id', dayId)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  const dayTarget = Number((day as any)?.targets?.calories ?? NaN);
-  if (!Number.isNaN(dayTarget)) return dayTarget;
-
-  const { data: latestTarget } = await supabase
-    .from('targets')
-    .select('calories')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  return Number((latestTarget as any)?.calories ?? 0) || 0;
+/** ─────────────────────────────────────────────────────────────────────────────
+ * Small logger for Supabase ops
+ * ──────────────────────────────────────────────────────────────────────────── */
+function sbLog(op: string, error: any, extra?: Record<string, any>) {
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.error(`[loggingService] ${op} error:`, error, extra ?? {})
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(`[loggingService] ${op} ok`, extra ?? {})
+  }
 }
 
-async function recalcAndBroadcast(dayId: string, userId: string): Promise<Totals> {
-  const baseTarget = await getBaseTargetCalories(dayId, userId);
-  const totals = await recalcAndPersistDay(dayId, userId, baseTarget);
-  eventBus.emit('day:totals', { dayId, totals });
-  return totals;
+/** If caller passes a YYYY-MM-DD we use it; otherwise default to today (Chicago). */
+function normalizeToDateKey(dayIdOrDate?: string): string {
+  if (dayIdOrDate && /^\d{4}-\d{2}-\d{2}$/.test(dayIdOrDate)) return dayIdOrDate
+  return dateKeyChicago()
 }
 
-async function getDayDate(dayId: string): Promise<string> {
-  const { data } = await supabase.from('days').select('date').eq('id', dayId).maybeSingle();
-  return (data as any)?.date as string;
+/* ────────────────────────────── FOOD (unchanged pattern) ───────────────────────────── */
+
+export type UpsertFoodArgs = {
+  id?: string
+  userId: string
+  dayId?: string // YYYY-MM-DD preferred; if omitted, uses today (Chicago)
+  name: string   // description / free text
+  calories: number
+  protein?: number | null
+  carbs?: number | null
+  fat?: number | null
+  source?: string | null // e.g. 'nlp' | 'manual' | 'saved'
 }
 
-/** ---------------- FOOD ---------------- */
-export async function upsertFoodEntry(params: FoodEntryUpsert): Promise<Totals> {
-  const { id, userId, dayId, name, calories, protein, carbs, fat, meta } = params;
+export async function upsertFoodEntry(args: UpsertFoodArgs) {
+  const { id, userId, dayId, name, calories, protein = null, carbs = null, fat = null, source = null } = args
+  if (!userId) throw new Error('Missing userId')
+  if (!name || calories == null) throw new Error('Missing required food fields')
 
-  const entry_date = await getDayDate(dayId);
+  const entry_date = normalizeToDateKey(dayId)
+  const payload: any = { user_id: userId, entry_date, description: name, calories, protein, carbs, fat, source }
 
+  let error: any
+  if (id) {
+    const { error: e } = await supabase.from('food_entries').update(payload).eq('id', id).eq('user_id', userId)
+    error = e
+  } else {
+    const { error: e } = await supabase.from('food_entries').insert([payload])
+    error = e
+  }
+  sbLog('upsertFoodEntry', error, { entry_date, calories })
+  if (error) throw new Error(error.message || 'Failed to upsert food')
+
+  await recalcAndPersistDay(userId, entry_date)
+}
+
+export async function deleteFoodEntry(args: { id: string; userId: string }) {
+  const { id, userId } = args
+  if (!id || !userId) throw new Error('Missing id/user')
+
+  const { error } = await supabase.from('food_entries').delete().eq('id', id).eq('user_id', userId)
+  sbLog('deleteFoodEntry', error, { id })
+  if (error) throw new Error(error.message || 'Failed to delete food')
+}
+
+/* ───────────────────────────── WORKOUTS (Option A: required columns only) ───────────────────────────── */
+
+/**
+ * We accept TodayView's shape ({ kind, calories, ... }) but we only persist:
+ *   user_id, entry_date, activity, calories_burned
+ * to avoid column-not-found errors.
+ */
+export type UpsertWorkoutArgs = {
+  id?: string
+  userId: string
+  dayId?: string               // YYYY-MM-DD preferred
+  kind: string                 // mapped to activity
+  calories: number             // mapped to calories_burned
+  // Other fields are accepted but ignored to keep DB writes minimal/safe
+  minutes?: number | null
+  intensity?: string | null
+  source?: string | null
+  meta?: any
+}
+
+export async function upsertWorkoutEntry(args: UpsertWorkoutArgs) {
+  const { id, userId, dayId, kind, calories } = args
+  if (!userId) throw new Error('Missing userId')
+  if (!kind) throw new Error('Missing activity/kind')
+
+  const entry_date = normalizeToDateKey(dayId)
+
+  // OPTION A: only required columns for workout_entries
   const payload: any = {
     user_id: userId,
-    description: name,
-    calories,
-    protein,
-    carbs,
-    fat,
-    updated_at: new Date().toISOString(),
-  };
-  if (meta?.source) payload.source = String(meta.source);
-
-  const q = supabase.from('food_entries');
-  if (id) {
-    // Update without overwriting entry_date
-    const { error } = await q.update(payload).eq('id', id).eq('user_id', userId);
-    if (error) throw error;
-  } else {
-    // Insert with entry_date
-    payload.entry_date = entry_date;
-    const { error } = await q.insert([payload]);
-    if (error) throw error;
+    entry_date,
+    activity: String(kind).trim(),
+    calories_burned: Math.max(0, Math.round(calories ?? 0)),
   }
 
-  const totals = await recalcAndBroadcast(dayId, userId);
-  eventBus.emit('meal:upsert', { dayId, totals });
-  eventBus.emit('food:upsert', { dayId, totals });
-  return totals;
-}
-
-export async function deleteFoodEntry(params: { id: string; userId: string; dayId: string }): Promise<Totals> {
-  const { id, userId, dayId } = params;
-  const { error } = await supabase.from('food_entries').delete().eq('id', id).eq('user_id', userId);
-  if (error) throw error;
-
-  const totals = await recalcAndBroadcast(dayId, userId);
-  eventBus.emit('meal:delete', { dayId, totals });
-  eventBus.emit('food:delete', { dayId, totals });
-  return totals;
-}
-
-/** ---------------- WORKOUTS ---------------- */
-export async function upsertWorkoutEntry(params: WorkoutEntryUpsert): Promise<Totals> {
-  const { id, userId, dayId, kind, calories, duration_min, intensity, meta } = params;
-
-  const entry_date = await getDayDate(dayId);
-
-  const payload: any = {
-    user_id: userId,
-    activity: kind,
-    minutes: typeof duration_min === 'number' ? duration_min : null,
-    calories_burned: calories,
-    updated_at: new Date().toISOString(),
-  };
-
-  const resolvedIntensity = intensity ?? meta?.intensity;
-  if (resolvedIntensity) payload.intensity = String(resolvedIntensity);
-  if (meta?.source) payload.source = String(meta.source);
-
-  const q = supabase.from('workout_entries');
+  let error: any
   if (id) {
-    // Update without overwriting entry_date
-    const { error } = await q.update(payload).eq('id', id).eq('user_id', userId);
-    if (error) throw error;
+    const { error: e } = await supabase.from('workout_entries').update(payload).eq('id', id).eq('user_id', userId)
+    error = e
   } else {
-    // Insert with entry_date
-    payload.entry_date = entry_date;
-    const { error } = await q.insert([payload]);
-    if (error) throw error;
+    const { error: e } = await supabase.from('workout_entries').insert([payload])
+    error = e
   }
+  sbLog('upsertWorkoutEntry', error, { entry_date, kind })
+  if (error) throw new Error(error.message || 'Failed to upsert workout')
 
-  const totals = await recalcAndBroadcast(dayId, userId);
-  eventBus.emit('workout:upsert', { dayId, totals });
-  return totals;
+  await recalcAndPersistDay(userId, entry_date)
 }
 
-export async function deleteWorkoutEntry(params: { id: string; userId: string; dayId: string }): Promise<Totals> {
-  const { id, userId, dayId } = params;
-  const { error } = await supabase.from('workout_entries').delete().eq('id', id).eq('user_id', userId);
-  if (error) throw error;
+// delete can accept dayId but ignore it; TodayView sometimes passes it
+export async function deleteWorkoutEntry(args: { id: string; userId: string; dayId?: string }) {
+  const { id, userId } = args
+  if (!id || !userId) throw new Error('Missing id/user')
+  const { error } = await supabase.from('workout_entries').delete().eq('id', id).eq('user_id', userId)
+  sbLog('deleteWorkoutEntry', error, { id })
+  if (error) throw new Error(error.message || 'Failed to delete workout')
+}
 
-  const totals = await recalcAndBroadcast(dayId, userId);
-  eventBus.emit('workout:delete', { dayId, totals });
-  return totals;
+/**
+ * Bulk insert workout rows for a specific user + date.
+ * Writes only: user_id, entry_date, activity, calories_burned
+ * (No day_id / minutes / intensity / source / order_index / description)
+ */
+export async function bulkAddWorkoutsToDay(args: {
+  userId: string
+  dayUUID?: string            // ignored in Option A to avoid missing column errors
+  dateKey?: string            // YYYY-MM-DD (defaults to today Chicago)
+  items: Array<{
+    activity: string
+    calories_burned?: number | null
+    // any other fields will be ignored in Option A
+  }>
+}) {
+  const { userId, dateKey } = args
+  if (!userId) throw new Error('Missing userId')
+
+  const entry_date = normalizeToDateKey(dateKey)
+  const rows = (args.items || [])
+    .map((w) => ({
+      user_id: userId,
+      entry_date,
+      activity: String(w.activity || '').trim(),
+      calories_burned: Math.max(0, Math.round(w.calories_burned ?? 0)), // enforce NOT NULL
+    }))
+    .filter((r) => r.activity.length > 0)
+
+  if (!rows.length) return
+
+  const { error } = await supabase.from('workout_entries').insert(rows)
+  sbLog('bulkAddWorkoutsToDay', error, { entry_date, count: rows.length })
+  if (error) throw new Error(error.message || 'Failed to add workouts')
+
+  await recalcAndPersistDay(userId, entry_date)
 }

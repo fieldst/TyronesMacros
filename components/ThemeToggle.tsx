@@ -1,16 +1,34 @@
 // components/ThemeToggle.tsx
-import React from 'react'
-import { useDarkMode } from '../hooks/useDarkMode'
+import React, { useEffect, useState } from 'react';
+import { Sun, Moon } from 'lucide-react';
 
 export default function ThemeToggle() {
-  const { dark, toggleDark } = useDarkMode()
+  const [isDark, setIsDark] = useState(false);
+
+  useEffect(() => {
+    // Check initial theme
+    const saved = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const shouldBeDark = saved === 'dark' || (!saved && prefersDark);
+    
+    setIsDark(shouldBeDark);
+    document.documentElement.classList.toggle('dark', shouldBeDark);
+  }, []);
+
+  function toggleTheme() {
+    const newIsDark = !isDark;
+    setIsDark(newIsDark);
+    localStorage.setItem('theme', newIsDark ? 'dark' : 'light');
+    document.documentElement.classList.toggle('dark', newIsDark);
+  }
+
   return (
     <button
-      onClick={toggleDark}
-      className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-gray-700 dark:text-gray-100 shadow-sm"
-      title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+      onClick={toggleTheme}
+      className="p-2 rounded-xl bg-neutral-200 dark:bg-neutral-700 hover:bg-neutral-300 dark:hover:bg-neutral-600 transition-colors"
+      title={`Switch to ${isDark ? 'light' : 'dark'} mode`}
     >
-      {dark ? '☀️ Light' : '🌙 Dark'}
+      {isDark ? <Sun size={16} /> : <Moon size={16} />}
     </button>
-  )
+  );
 }

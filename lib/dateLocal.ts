@@ -16,15 +16,19 @@ export function dateKeyChicago(d: Date = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Get current Chicago date key (primary function to use) */
+export function getCurrentChicagoDateKey(): string {
+  return dateKeyChicago();
+}
+
 /**
- * Returns YYYY-MM-DD string in the user’s local timezone,
+ * Returns YYYY-MM-DD string in the user's local timezone,
  * or in a specific IANA timezone if passed (e.g. "America/New_York").
  */
 export function localDateKey(d: Date = new Date(), timeZone?: string): string {
-  const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const tz = timeZone || TZ; // Default to Chicago
   return d.toLocaleDateString("en-CA", { timeZone: tz });
 }
-
 
 /** Milliseconds until the next Chicago midnight (accurate to < 60s). */
 export function msUntilNextChicagoMidnight(now: Date = new Date()): number {
@@ -61,4 +65,3 @@ export function parseDateKeyLocal(dateKey: string): Date {
   // This creates a local Date at midnight local time (no TZ skew)
   return new Date(y, (m ?? 1) - 1, d ?? 1);
 }
-

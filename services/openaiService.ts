@@ -31,9 +31,11 @@ function extractFirstJson(text: string): any {
   throw new Error('Unable to parse JSON from model response');
 }
 
+// services/openaiService.ts
+
 async function callServer(body: any): Promise<string> {
   const model = getSelectedModel();
-  const url = '/api/generate'; // always same-origin; Vite dev proxy handles 5173->3001 in dev
+  const url = '/api/generate'; // Vite proxy points to backend
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 25_000);
@@ -46,71 +48,85 @@ async function callServer(body: any): Promise<string> {
       signal: ac.signal,
     });
 
-    // Rate headers -> banner (best-effort)
+    // Rate limit headers -> banner (best-effort)
     try {
       const limit = Number(res.headers.get('X-RateLimit-Limit') || 0);
       const remaining = Number(res.headers.get('X-RateLimit-Remaining') || 0);
       const reset = Number(res.headers.get('X-RateLimit-Reset') || 0);
       if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('rate-update', { detail: { limit, remaining, reset } }));
+        window.dispatchEvent(
+          new CustomEvent('rate-update', { detail: { limit, remaining, reset } })
+        );
       }
     } catch {}
 
     // Always read as text first so we can debug raw responses
     const raw = await res.text();
     let payload: any = null;
-    try { payload = JSON.parse(raw); } catch { payload = { text: raw }; }
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      payload = { text: raw };
+    }
 
-    if (!res.ok) {
-      const msg = payload?.error || payload?.message || raw || `HTTP ${res.status}`;
-      console.error('API /api/generate error:', { status: res.status, msg, payload });
+    if (!res.ok || payload?.success === false) {
+      const msg =
+        payload?.error || payload?.message || raw || `HTTP ${res.status}`;
+      console.error('API /api/generate error:', {
+        status: res.status,
+        msg,
+        payload,
+      });
       throw new Error(msg);
     }
 
-    const out = (payload?.text ?? raw) as string;
-    if ((import.meta as any).env?.VITE_DEBUG_AI) {
-      console.debug('AI raw text:', out.slice(0, 800));
-    }
-    return out;
+    // ✅ FIX: return only the text string
+    return payload?.data?.text ?? '';
   } finally {
     clearTimeout(timer);
   }
 }
 
+
 /* ================= Features ================= */
 
 export async function estimateMacrosForMeal(mealText: string, profile: Profile): Promise<{ macros: MacroSet; note: string }> {
-  const schema = {
-    name: 'macro_estimate',
-    schema: { type: 'object', properties: {
-      calories: { type: 'number' }, protein: { type: 'number' }, carbs: { type: 'number' }, fat: { type: 'number' },
-      portion_grams: { type: 'number' }, assumptions: { type: 'string' }, confidence: { type: 'number' }
-    }, required: ['calories','protein','carbs','fat'], additionalProperties: false },
-    strict: true,
-  };
-  const system = 'You are a nutrition assistant. Use standard nutrition references and realistic portions. Return only valid JSON per the schema.';
-  const prompt = `Estimate macros for this meal for a person of weight ${profile?.weight_lbs ?? 'unknown'} lbs. Respond with JSON only: calories, protein, carbs, fat. Meal: ${mealText}`;
-  const text = await callServer({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 });
-  try {
-    const obj = extractFirstJson(text);
-    const macros: MacroSet = { calories: +obj.calories || 0, protein: +obj.protein || 0, carbs: +obj.carbs || 0, fat: +obj.fat || 0 };
-    return { macros, note: 'AI estimate' };
-  } catch {
-    return { macros: { calories: 0, protein: 0, carbs: 0, fat: 0 }, note: 'AI estimate (unparsed)' };
+  const res = await fetch('/api/estimate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description: mealText }),
+  });
+
+  const raw = await res.text();
+  let payload: any = null;
+  try { payload = JSON.parse(raw); } catch {}
+
+  if (!res.ok || payload?.success === false) {
+    const msg = payload?.error || payload?.message || raw || `HTTP ${res.status}`;
+    console.error('API /api/estimate error:', { status: res.status, msg, payload });
+    throw new Error(msg);
   }
+
+  // ✅ Backend already returns {items, totals}, so unwrap and map
+  const totals = payload?.data?.totals ?? { calories: 0, protein: 0, carbs: 0, fat: 0 };
+
+  return { macros: totals, note: 'AI estimate' };
 }
+
 
 export async function getWorkoutCalories(workout: string, profile: Profile): Promise<{ total_calories: number }> {
   const schema = { name: 'workout_energy', schema: { type: 'object', properties: { total_calories: { type: 'number' }, assumptions: { type: 'string' } }, required: ['total_calories'], additionalProperties: false }, strict: true };
   const system = 'You are a fitness assistant. Use MET-based logic by activity type/intensity with user weight. Return valid JSON only.';
-  const prompt = `Given weight ${profile?.weight_lbs ?? 'unknown'} lbs, estimate TOTAL calories burned for this workout. Return JSON only as { "total_calories": number }. Workout: ${workout}`;
+  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
+Generate a motivational line that feels different from previous days.`;
   const text = await callServer({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 });
   try { const obj = extractFirstJson(text); return { total_calories: +obj.total_calories || 0 }; } catch { return { total_calories: 0 }; }
 }
 
 export async function getSwapSuggestion(remaining: MacroSet): Promise<string> {
   const system = 'You are a concise nutrition coach.';
-  const prompt = `Suggest one quick food swap to hit these remaining macros: ${JSON.stringify(remaining)}. Keep it to one sentence.`;
+  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
+Generate a motivational line that feels different from previous days.`;
   return await callServer({ prompt, system, temperature: 0.2 });
 }
 
@@ -128,7 +144,8 @@ export async function getTargetOptions(profile: Profile, goal: Goal): Promise<{ 
     strict: true
   };
   const system = 'You are a nutrition assistant. Compute BMR via Mifflin-St Jeor and TDEE via activity factor; set targets per goal (maintain≈TDEE, cut≈-15%, recomp≈-5%, gain≈+10%). Protein 0.7–1.0 g/lb (middle). Fat 20–30% kcal; rest carbs. Return JSON per schema.';
-  const prompt = `Given profile ${JSON.stringify(profile)} and goal "${goal}", compute BMR, TDEE, and derive specific targets. Output JSON with a 'notes' string and an 'options' list with labeled macro targets (calories, protein, carbs, fat).`;
+  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
+Generate a motivational line that feels different from previous days.`;
   const text = await callServer({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 });
   try { const parsed = extractFirstJson(text); if (!Array.isArray(parsed?.options)) throw new Error('Bad shape'); return parsed as { options: TargetOption[]; notes: string }; } catch { return { notes: 'AI options unavailable', options: [] }; }
 }
@@ -210,15 +227,8 @@ export async function getMealCoaching(
     ]
   };
 
-  const prompt =
-`User just logged a meal: "${mealText}".
-Profile: ${JSON.stringify(profile)}.
-Daily targets: ${JSON.stringify(targets)}.
-Remaining before this meal: ${JSON.stringify(remainingBefore)}.
-
-Return STRICT JSON that satisfies the schema exactly. No extra keys, no prose.
-Example ONLY for shape (do not repeat these values verbatim):
-${JSON.stringify(example)}`;
+  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
+Generate a motivational line that feels different from previous days.`;
 
   const text = await callServer({
     prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2
@@ -242,29 +252,45 @@ ${JSON.stringify(example)}`;
     throw new Error(e?.message || 'Could not parse AI coaching JSON.');
   }
 }
-export async function getDailyGreeting(name: string, dateKey: string, hour: number): Promise<string> {
+export async function getDailyGreeting(
+  name: string,
+  dateKey: string,
+  hour: number
+): Promise<string> {
   const system =
     'You are a concise, uplifting fitness & nutrition coach. ' +
-    'Write ONE short motivational sentence tailored to the user. ' +
+    'Write ONE short motivational phrase that feels unique for this day. ' +
+    'Incorporate variety based on time of day (morning, afternoon, evening). ' +
     'Keep it actionable, positive, and specific to daily adherence. ' +
-    'Constraints: 6–16 words, no emojis, no hashtags, no quotes, present-tense, at most one exclamation.';
+    'Make it very uplifting without being to generic. ' +
+    'Constraints: 6–16 words, no emojis, no hashtags, no quotes, present-tense only.';
 
-  const prompt =
-`User: ${name || 'Athlete'}
-Local date: ${dateKey}
-Local hour (0–23): ${hour}
+  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
+Generate a motivational line that feels different from previous days.`;
 
-Write a single personalized line that motivates the user to stay on track today (food, movement, recovery). 
-Return ONLY the sentence without quotes or extra text.`;
+  // callServer already returns a plain string
+  const line = await callServer({ prompt, system, temperature: 0.7 });
+  return (line || '').toString();
+}
 
-  const text = await (async () => {
-    // Reuse your existing server call helper
-    // Slightly warmer temperature for variety across days
-    // If you prefer more consistency, drop to 0.5
-    // @ts-ignore
-    return await callServer({ prompt, system, temperature: 0.8 });
-  })();
+// --- Step 2: Plan Week ---------------------------------
+export type PlanWeekOptions = {
+  goal: 'cut'|'lean'|'maintain'|'bulk';
+  style: 'HIIT'|'cardio'|'strength+cardio'|'CrossFit';
+  availableDays: ('Mon'|'Tue'|'Wed'|'Thu'|'Fri'|'Sat'|'Sun')[];
+  minutesPerSession: number;
+  equipment: string[];
+  experience: 'beginner'|'intermediate'|'advanced';
+  startDate?: string;
+};
 
-  return (text || '').trim();
+export async function planWeek(opts: PlanWeekOptions) {
+  const resp = await fetch('/api/plan-week', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(opts)
+  });
+  if(!resp.ok) throw new Error('Failed to plan week');
+  return await resp.json();
 }
 

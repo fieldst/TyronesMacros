@@ -1,69 +1,160 @@
 // services/dayService.ts
 import { supabase } from '../supabaseClient';
-import { dateKeyChicago } from '../lib/dateLocal';
-import { localDateKey } from '../lib/dateLocal';
+import { getCurrentChicagoDateKey } from '../lib/dateLocal';
+import { getCurrentUserId } from '../auth';
 
-type DayRow = {
+export type DayRow = {
   id: string;
   date: string;
   targets: any | null;
-  totals: { foodCals: number; workoutCals: number; allowance: number; remaining: number } | null;
+  totals: { 
+    food_cals: number; 
+    workout_cals: number; 
+    allowance: number; 
+    remaining: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+  } | null;
 };
 
-// simple logger you can reuse
-function logSb(where: string, error: any, extra?: Record<string, unknown>) {
-  if (error) {
-    // eslint-disable-next-line no-console
-    console.error(`[Supabase] ${where}`, { error, ...extra });
+export type DaySnapshot = {
+  date: string;
+  targets: any | null;
+  totals: any | null;
+};
+
+/**
+ * Save/load day snapshot to localStorage for instant hydration
+ */
+export function saveDaySnapshot(snapshot: DaySnapshot) {
+  try {
+    localStorage.setItem('lastDaySnapshot', JSON.stringify(snapshot));
+  } catch (e) {
+    console.warn('Failed to save day snapshot:', e);
+  }
+}
+
+export function loadDaySnapshot(): DaySnapshot | null {
+  try {
+    const raw = localStorage.getItem('lastDaySnapshot');
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    console.warn('Failed to load day snapshot:', e);
+    return null;
   }
 }
 
 /**
+ * Get today's snapshot for instant hydration
+ */
+export function getTodaySnapshot(): DaySnapshot | null {
+  const snapshot = loadDaySnapshot();
+  const today = getCurrentChicagoDateKey();
+  
+  if (snapshot && snapshot.date === today) {
+    return snapshot;
+  }
+  
+  return null;
+}
+
+/**
+ * Get food entries for a specific date
+ */
+export async function getFoodForDate(userId: string, date: string) {
+  const { data, error } = await supabase
+    .from('food_entries')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('entry_date', date)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
+/**
+ * Get workout entries for a specific date
+ */
+export async function getWorkoutsForDate(userId: string, date: string) {
+  const { data, error } = await supabase
+    .from('workout_entries')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('entry_date', date)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
+/**
  * Ensures a `days` row exists for today's Chicago date.
- * If missing, it clones yesterday's targets so your "current target" persists,
- * and zeros out totals.
  */
 export async function ensureTodayDay(userId: string): Promise<DayRow> {
-  const today = localDateKey();
+  const today = getCurrentChicagoDateKey();
 
-  // Already have today?
-  const { data: existing, error: exErr } = await supabase
+  // Try to get existing day
+  const { data: existing, error: fetchErr } = await supabase
     .from('days')
     .select('id, date, targets, totals')
     .eq('user_id', userId)
     .eq('date', today)
     .maybeSingle();
-  logSb('ensureTodayDay:fetch today', exErr, { userId, today });
 
-  if (!exErr && existing) return existing as DayRow;
+  if (fetchErr) throw fetchErr;
 
-  // Get most recent prior day to carry forward targets
-  const { data: lastDays, error: lastErr } = await supabase
+  if (existing) {
+    const result = existing as DayRow;
+    
+    // Save snapshot for next load
+    saveDaySnapshot({
+      date: result.date,
+      targets: result.targets,
+      totals: result.totals
+    });
+    
+    return result;
+  }
+
+  // Create new day
+  const { data: newDay, error: insertErr } = await supabase
     .from('days')
-    .select('targets, date')
-    .eq('user_id', userId)
-    .lt('date', today)
-    .order('date', { ascending: false })
-    .limit(1);
-  logSb('ensureTodayDay:fetch last day', lastErr, { userId, today });
-
-  const carryTargets = lastDays?.[0]?.targets ?? null;
-  const baseCalories = Number(carryTargets?.calories ?? 0) || 0;
-
-  const newRow = {
-    user_id: userId,
-    date: today,
-    targets: carryTargets, // keep current target
-    totals: { foodCals: 0, workoutCals: 0, allowance: baseCalories, remaining: baseCalories },
-  };
-
-  const { data: inserted, error: insErr } = await supabase
-    .from('days')
-    .insert(newRow)
+    .insert({
+      user_id: userId,
+      date: today,
+      targets: { calories: 2200, protein: 170, carbs: 210, fat: 60 },
+      totals: { food_cals: 0, workout_cals: 0, allowance: 2200, remaining: 2200, protein: 0, carbs: 0, fat: 0 }
+    })
     .select('id, date, targets, totals')
     .single();
-  logSb('ensureTodayDay:insert today', insErr, { userId, today });
 
-  if (insErr) throw insErr;
-  return inserted as DayRow;
+  if (insertErr) throw insertErr;
+  
+  const result = newDay as DayRow;
+  
+  // Save snapshot for next load
+  saveDaySnapshot({
+    date: result.date,
+    targets: result.targets,
+    totals: result.totals
+  });
+  
+  return result;
+}
+
+/**
+ * Get day data for a specific date
+ */
+export async function getDayData(userId: string, date: string): Promise<DayRow | null> {
+  const { data, error } = await supabase
+    .from('days')
+    .select('id, date, targets, totals')
+    .eq('user_id', userId)
+    .eq('date', date)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as DayRow | null;
 }

@@ -1,64 +1,44 @@
-import React, { useEffect } from 'react'
+// components/Modal.tsx
+import React from 'react';
+import { X } from 'lucide-react';
 
 type Props = {
-  isOpen: boolean
-  onClose: () => void
-  title?: string
-  children?: React.ReactNode
-}
+  isOpen: boolean;
+  onClose: () => void;
+  title?: string;
+  children: React.ReactNode;
+  size?: 'sm' | 'md' | 'lg';
+};
 
-export default function Modal({ isOpen, onClose, title, children }: Props) {
-  // Close on ESC key
-  useEffect(() => {
-    if (!isOpen) return
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isOpen, onClose])
+export default function Modal({ isOpen, onClose, title, children, size = 'md' }: Props) {
+  if (!isOpen) return null;
 
-  if (!isOpen) return null
+  const sizeClasses = {
+    sm: 'max-w-sm',
+    md: 'max-w-md',
+    lg: 'max-w-2xl'
+  };
 
   return (
-    <div className="fixed inset-0 z-50">
-      {/* Overlay click closes */}
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-
-      <div className="absolute inset-0 flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-white dark:bg-neutral-900 rounded-2xl shadow-xl">
-          {(title || true) && (
-            <div className="px-5 py-4 border-b flex items-center justify-between">
-              {title ? (
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                  {title}
-                </h2>
-              ) : <div />}
-
-              {/* X button always visible */}
-              <button
-                type="button"
-                onClick={onClose}
-                className="ml-2 rounded-lg p-1 text-gray-600 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-purple-500 dark:text-gray-300 dark:hover:bg-neutral-800"
-                aria-label="Close"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-5 w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.75}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          )}
-
-          <div className="p-5">{children}</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+      <div className={`w-full ${sizeClasses[size]} bg-white dark:bg-neutral-900 rounded-2xl shadow-xl max-h-[90vh] overflow-hidden`}>
+        {title && (
+          <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-200 dark:border-neutral-800">
+            <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+              {title}
+            </h2>
+            <button
+              onClick={onClose}
+              className="p-1 text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+        )}
+        <div className="overflow-y-auto max-h-[calc(90vh-80px)]">
+          {children}
         </div>
       </div>
     </div>
-  )
+  );
 }

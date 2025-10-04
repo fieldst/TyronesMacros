@@ -1,6 +1,6 @@
 # TyronesMacros
 
-A simple mobile app that tracks daily countdown macros (what’s left to hit targets) plus workouts.
+A smart fitness & nutrition tracking PWA with AI coaching, built with React + Vite + Supabase.
 
 ## Local Development
 
@@ -16,62 +16,83 @@ A simple mobile app that tracks daily countdown macros (what’s left to hit tar
     ```bash
     npm install
     ```
-3.  Create a `.env.local` file in the root of the project and add your Gemini API key. This file is ignored by version control for security.
+3.  Create a `.env.local` file in the root of the project and add your API keys:
 
     ```
-    VITE_API_KEY=your_key_here
+    VITE_SUPABASE_URL=your-supabase-url
+    VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
+    OPENAI_API_KEY=your-openai-api-key
     ```
 
-4.  Run the development server:
+4.  Start the development server:
     ```bash
     npm run dev
     ```
 
-The application will be available on your local network.
+The application will be available at `http://localhost:5173`.
 
----
+### Database Setup
 
-## Adding to Your Phone (PWA Installation)
+1. Create a Supabase project
+2. Run the migration in `supabase/migrations/create_v2_schema.sql`
+3. Set up your environment variables
 
-You can add this web app to your phone's home screen so it looks and feels like a regular app.
+## Features
 
-### Instructions
+- **Smart Macro Tracking**: AI-powered food logging with macro estimation
+- **Workout Planning**: AI-generated weekly workout plans
+- **History & Analytics**: Charts and trends with Recharts
+- **Saved Meals**: Quick-add favorite foods and meal templates
+- **Real-time Updates**: Instant UI updates with event bus
+- **PWA Support**: Install as native app on mobile devices
 
-1.  **Start the App:** Make sure the development server is running (`npm run dev`).
-2.  **Find Your Network IP:** Your terminal will show an address like `http://192.168.1.10:5173`. This is the address you need. `localhost` will not work from your phone.
-3.  **Open on Your Phone:** Open the browser on your phone (Safari for iOS, Chrome for Android) and go to the network address from the previous step.
-    -   *Note: Your phone and your computer must be connected to the same Wi-Fi network.*
+## API Endpoints
 
-### On iOS (iPhone/iPad)
+- `/api/health` - Health check with environment status
+- `/api/estimate-macros` - AI food parsing and macro estimation
+- `/api/meal-swap` - Healthier meal alternatives
+- `/api/plan-week` - 7-day workout plan generation
 
-1.  Tap the **Share** button in Safari's bottom toolbar. It looks like a square with an arrow pointing up.
-2.  Scroll down the share sheet and tap **"Add to Home Screen"**.
-3.  Confirm the name and tap **"Add"**. The app icon will now be on your home screen.
+## Development Commands
 
-### On Android
+```bash
+# Start development server
+npm run dev
 
-1.  Tap the **three-dot menu** icon in the top right corner of Chrome.
-2.  Tap **"Install app"** or **"Add to Home screen"** from the menu.
-3.  Follow the on-screen prompts to confirm. The app icon will be added to your home screen.
+# Build for production
+npm run build
 
+# Preview production build
+npm run preview
 
-## OpenAI Responses API, Rate limiting, and Model Selector
+# Health check
+curl http://localhost:5173/api/health
+```
 
-- Server: `api/generate.ts` now uses OpenAI **Responses API** (`gpt-4o-mini` by default), supports `response_format` with JSON schema, and applies a simple in-memory **rate limit** (configurable via `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MS`).
-- Client: `services/openaiService.ts` provides replacements for the former Gemini helpers and auto-sends the **selected model** (saved in `localStorage` by `components/ModelSelector.tsx`).
-- Env: set `OPENAI_API_KEY`, optionally override `OPENAI_MODEL` and `VITE_OPENAI_MODEL`.
+## Architecture
 
-## Implement Git
+- **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS
+- **Backend**: Supabase (Auth, Database, RLS)
+- **AI**: OpenAI GPT-4o-mini via serverless functions
+- **Charts**: Recharts for data visualization
+- **State**: Event bus for real-time updates
+- **PWA**: Service worker + manifest for native app experience
 
-3. Stage all your files
-git add .
+## Acceptance Tests
 
-4. Commit changes
-git commit -m "Initial commit of Tyrone's Macros app"
+✅ `/api/health` returns environment status  
+✅ Natural language food input works with AI parsing  
+✅ Workout planning generates 7-day plans  
+✅ History charts render with no errors  
+✅ All features work with structured error handling  
+✅ Single `npm run dev` command starts everything  
+✅ No raw database drivers - only HTTPS via Supabase  
 
+## Production Ready
 
-(or update the message if this is not the first commit)
-
-5. Push to GitHub
-git branch -M main
-git push -u origin main
+- Zero raw API/network errors
+- Graceful fallbacks when AI is unavailable
+- Optimistic UI updates with event bus
+- Mobile-first responsive design
+- Dark/light theme support
+- WebContainer compliant architecture
