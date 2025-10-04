@@ -15,39 +15,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       model = 'gpt-4o-mini',
       temperature = 0.7,
       expectJson = false,
-      jsonSchema,
     } = (req.body ?? {}) as {
-      prompt?: string;
-      system?: string;
-      model?: string;
-      temperature?: number;
-      expectJson?: boolean;
-      jsonSchema?: unknown;
+      prompt?: string; system?: string; model?: string; temperature?: number; expectJson?: boolean;
     };
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Type the messages with literal roles so TypeScript is happy.
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      { role: 'system', content: system },
-      { role: 'user', content: prompt },
+      { role: 'system', content: system || '' },
+      { role: 'user',   content: prompt || '' },
     ];
 
     const params: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
       model,
       messages,
       temperature,
-      ...(expectJson
-        ? { response_format: { type: 'json_object' as const } }
-        : {}),
+      ...(expectJson ? { response_format: { type: 'json_object' as const } } : {}),
     };
-
-    // (jsonSchema) is optional; leaving out tool forcing here to keep things simple/robust.
 
     const out = await client.chat.completions.create(params);
     const text = out.choices?.[0]?.message?.content ?? '';
-
-    // Standard shape your client expects
     res.setHeader('Content-Type', 'application/json');
     return res.status(200).json({ success: true, data: { text } });
   } catch (err: any) {

@@ -12,6 +12,8 @@ function clampTotals(t: any): Totals {
   return { calories: n(t?.calories), protein: n(t?.protein), carbs: n(t?.carbs), fat: n(t?.fat) };
 }
 
+
+
 function safeJSON<T=any>(s: string): T | null {
   try { return JSON.parse(s) as T; } catch {}
   const fenced = s.match(/```json([\s\S]*?)```/i) || s.match(/```([\s\S]*?)```/i);
