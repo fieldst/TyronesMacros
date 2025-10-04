@@ -22,16 +22,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      { role: 'system', content: system || '' },
-      { role: 'user',   content: prompt || '' },
-    ];
+    { role: 'system', content: system || '' },
+    { role: 'user',   content: prompt || '' },
+  ];
 
-    const params: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
-      model,
-      messages,
-      temperature,
-      ...(expectJson ? { response_format: { type: 'json_object' as const } } : {}),
-    };
+    const out = await client.chat.completions.create({
+    model,
+    messages,
+    temperature,
+    ...(expectJson ? { response_format: { type: 'json_object' as const } } : {}),
+});
 
     const out = await client.chat.completions.create(params);
     const text = out.choices?.[0]?.message?.content ?? '';
