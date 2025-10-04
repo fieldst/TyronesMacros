@@ -1,13 +1,8 @@
 // api/estimate.ts
-// Adapter so the client can POST /api/estimate in all environments.
-// Delegates to the existing /api/estimate-macros route.
+// Production-safe adapter: expose POST /api/estimate and forward to /api/estimate-macros
+// without importing from it (avoids Node/Edge export/runtime mismatches).
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-
-// import the existing handler from estimate-macros
-// NOTE: your estimate-macros exports a fetch-style POST(Request) handler
-// If your file exports differently, adjust this import name accordingly.
-import { POST as estimateMacrosPOST } from './estimate-macros';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -16,32 +11,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // The client sends { description: string }
     const { description, userGoals, timezone } = (req.body ?? {}) as {
       description?: string;
       userGoals?: 'cut' | 'recomp' | 'bulk' | 'lean' | 'maintain';
       timezone?: string;
     };
-    if (!description || typeof description !== 'string') {
+
+    if (!description || typeof description !== 'string' || !description.trim()) {
       return res.status(400).json({ success: false, error: "Missing required field 'description' (string)" });
     }
 
-    // Convert to the shape your estimate-macros expects: { text, ... }
-    const url = new URL(req.url || 'http://localhost/api/estimate'); // required by Request
-    const forward = new Request(url.toString(), {
+    // Build same-origin base (works on Vercel behind proxies)
+    const proto = (req.headers['x-forwarded-proto'] as string) || 'https';
+    const host = req.headers.host as string;
+    const origin = `${proto}://${host}`;
+
+    // Forward to your existing route, mapping payload to what it expects
+    const forward = await fetch(`${origin}/api/estimate-macros`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: description, userGoals, timezone }),
     });
 
-    const response = await estimateMacrosPOST(forward);
-
-    // Pass through the response
-    const body = await response.text();
-    res.status(response.status);
-    const ct = response.headers.get('content-type') || 'application/json';
-    res.setHeader('Content-Type', ct);
-    return res.send(body);
+    const bodyText = await forward.text();
+    res.status(forward.status);
+    res.setHeader('Content-Type', forward.headers.get('content-type') || 'application/json');
+    return res.send(bodyText);
   } catch (err: any) {
     console.error('[/api/estimate adapter] error:', err?.stack || err);
     return res.status(500).json({ success: false, error: 'Internal error' });
