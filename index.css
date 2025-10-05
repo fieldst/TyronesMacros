@@ -1,33 +1,133 @@
-/* index.css — Tailwind v3 */
+/* index.css — Tailwind base */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Prevent zoom and improve touch responsiveness */
-* {
-  touch-action: manipulation;
+/* ──────────────────────────────────────────────────────────────────────────────
+   Brand tokens (Fields of Comfort Stays — Purple)
+   We expose RGB tokens so Tailwind can consume them in arbitrary color utilities.
+   ────────────────────────────────────────────────────────────────────────────── */
+:root {
+  --brand: 90 45 130;          /* #5A2D82 primary */
+  --brand-2: 140 84 196;       /* #8C54C4 accent */
+  --brand-3: 234 227 247;      /* #EAE3F7 soft lavender bg */
+  --brand-ink: 255 255 255;
+  --bg: 250 250 250;           /* base surface (light) */
+  --card: 255 255 255;         /* card surface (light) */
+  --muted: 110 110 120;
 }
 
-/* Ensure inputs don't cause zoom on iOS */
-input, textarea, select {
-  font-size: 16px !important;
+:root.dark {
+  /* Slightly brighter accent in dark for contrast */
+  --brand: 154 99 201;         /* lightened primary for dark bg */
+  --brand-2: 198 141 255;      /* brighter accent */
+  --brand-3: 38 30 55;         /* deep lavender */
+  --brand-ink: 255 255 255;
+  --bg: 16 18 22;              /* base surface (dark) */
+  --card: 22 24 30;            /* card surface (dark) */
+  --muted: 150 150 170;
 }
 
-/* Prevent layout shift during hydration */
-.skeleton {
-  @apply animate-pulse bg-gray-200 dark:bg-gray-700 rounded;
+/* Base surfaces */
+html, body, #root {
+  background-color: rgb(var(--bg));
 }
 
-/* Cards */
-.container-card { @apply bg-white rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.08)] border border-gray-100; }
+/* Improve touch responsiveness, prevent 300ms delay */
+* { touch-action: manipulation; }
+input, textarea, select { font-size: 16px !important; }
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Reusable UI primitives
+   ────────────────────────────────────────────────────────────────────────────── */
+
+/* Card */
+.container-card {
+  @apply rounded-2xl border border-white/10 bg-[rgb(var(--card))] shadow-sm;
+}
 
 /* Buttons */
-.btn { @apply inline-flex items-center justify-center rounded-lg px-3 py-2 font-medium transition; }
-.btn-primary { @apply bg-black text-white hover:bg-gray-800; }      /* ⬅️ removed "@apply btn" */
-.btn-ghost   { @apply bg-gray-100 hover:bg-gray-200; }              /* ⬅️ removed "@apply btn" */
-.btn-danger  { @apply bg-red-100 text-red-700 hover:bg-red-200; }   /* ⬅️ removed "@apply btn" */
+.btn {
+  @apply inline-flex items-center justify-center rounded-xl px-3 py-2 font-semibold transition;
+}
+.btn-primary {
+  @apply text-white shadow hover:opacity-95 active:scale-[.98];
+  background: linear-gradient(135deg,
+    rgba(var(--brand), 1) 0%,
+    rgba(var(--brand-2), 1) 100%);
+  color: rgb(var(--brand-ink));
+}
+.btn-ghost {
+  @apply border border-white/15 bg-white/5 hover:bg-white/10;
+}
 
-/* Badges, headings, etc. */
-.badge { @apply inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium; }
-.h-title { @apply text-2xl font-bold text-white drop-shadow; }
-.h-sub   { @apply text-sm text-gray-200; }
+/* Chips / badges */
+.badge {
+  @apply inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium;
+  color: rgb(var(--brand));
+  background: rgba(var(--brand-3), .6);
+  border: 1px solid rgba(var(--brand), .1);
+}
+
+/* Gradient text helper */
+.gradient-text {
+  background: linear-gradient(135deg,
+    rgba(var(--brand), 1) 0%,
+    rgba(var(--brand-2), 1) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Meters (animated gradient pills) */
+.meter-pill {
+  position: relative;
+  @apply rounded-2xl p-3 md:p-4 border overflow-hidden;
+  border-color: rgba(var(--brand), .2);
+  background:
+    linear-gradient(180deg, rgba(var(--brand-3), .9), rgba(var(--brand-3), .6));
+}
+.dark .meter-pill {
+  background:
+    linear-gradient(180deg, rgba(var(--brand-3), .35), rgba(var(--brand-3), .2));
+}
+
+/* subtle animated sheen */
+.meter-pill::after {
+  content: "";
+  position: absolute;
+  inset: -200% -50% auto -50%;
+  height: 200%;
+  transform: rotate(20deg);
+  background: radial-gradient(ellipse at top, rgba(255,255,255,0.15), transparent 40%),
+              linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  animation: sheen 6s linear infinite;
+  pointer-events: none;
+}
+@keyframes sheen {
+  0%   { transform: translateX(-20%) rotate(20deg); }
+  50%  { transform: translateX(10%)  rotate(20deg); }
+  100% { transform: translateX(-20%) rotate(20deg); }
+}
+
+.meter-label {
+  @apply text-[10px] md:text-xs font-medium uppercase tracking-wider;
+  color: rgb(var(--muted));
+}
+.meter-value {
+  @apply text-lg md:text-xl font-semibold;
+  color: rgb(var(--brand));
+}
+
+/* Bottom nav */
+.bottom-nav { @apply fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur bg-white/95 dark:bg-zinc-950/95; }
+.bottom-nav .tab { @apply h-14 px-4 flex flex-col items-center justify-center text-base focus:outline-none focus-visible:ring-2; }
+.bottom-nav .tab[aria-selected="true"] { @apply font-semibold; color: rgb(var(--brand)); }
+
+/* Spacer to prevent overlap with fixed nav */
+.page-padding-bottom { padding-bottom: 72px; }
+
+/* Fun micro-motion on interactive elements */
+.interactive:hover { transform: translateY(-1px); }
+.interactive:active { transform: translateY(0); }
+.interactive { transition: transform 120ms ease, opacity 120ms ease; }
