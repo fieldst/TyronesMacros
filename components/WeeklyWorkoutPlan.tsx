@@ -1,4 +1,3 @@
-// components/WeeklyWorkoutPlan.tsx
 import React, { useEffect, useMemo, useState } from 'react'
 import { Dumbbell, Printer, Shuffle, Recycle, Copy, ArrowLeftRight, CalendarDays, Info, Eye } from 'lucide-react'
 import { getCurrentUserId } from '../auth'
@@ -8,11 +7,11 @@ import { ensureTodayDay } from '../services/dayService'
 import { eventBus } from '../lib/eventBus'
 import { getActiveTarget } from '../services/targetsService'
 import { workoutStyleSuggestion } from '../services/coachSuggest'
+import { planWeek } from '../services/openaiService'
 
 /* ──────────────────────────────────────────────────────────────────────────────
    TYPES
    ────────────────────────────────────────────────────────────────────────────── */
-
 type Goal = 'cut' | 'lean' | 'bulk' | 'recomp'
 type Style =
   | 'strength' | 'hybrid' | 'bodyweight' | 'cardio' | 'crossfit'
@@ -66,7 +65,6 @@ type EquipmentProfile = { dumbbells: number[]; kettlebells: number[]; barbellMax
 /* ──────────────────────────────────────────────────────────────────────────────
    CONSTANTS / LS KEYS
    ────────────────────────────────────────────────────────────────────────────── */
-
 const LS_PLAN = 'tm:plannedWeek_v6'
 const LS_META = 'tm:planMeta_v6'
 const LS_EQUIP = 'tm:equipment_v1'
@@ -76,7 +74,6 @@ function uid() { return Math.random().toString(36).slice(2, 10) }
 /* ──────────────────────────────────────────────────────────────────────────────
    UTILS
    ────────────────────────────────────────────────────────────────────────────── */
-
 function saveLS<T>(key: string, v: T) { localStorage.setItem(key, JSON.stringify(v)) }
 function loadLS<T>(key: string, fallback: T): T {
   try { const s = localStorage.getItem(key); return s ? JSON.parse(s) as T : fallback } catch { return fallback }
@@ -114,7 +111,6 @@ function titleCase(s: string) { return (s || '').replace(/\b\w/g, c => c.toUpper
 function bullets(lines: string[]) { return lines.map(s => `• ${s}`).join('\n') }
 
 /* ── Equipment chips + parser ───────────────────────────────────────────────── */
-
 function uniqSorted(arr: number[]): number[] { return Array.from(new Set(arr)).sort((a,b)=>a-b) }
 function loadEquipmentProfile(): EquipmentProfile {
   return loadLS<EquipmentProfile>(LS_EQUIP, { dumbbells: [], kettlebells: [], barbellMax: undefined })
@@ -145,7 +141,6 @@ function normalizeEquipmentText(s: string): EquipmentProfile {
 }
 
 /* ── Outbound payload normalizers (fix API errors) ──────────────────────────── */
-
 const ALLOWED_STYLES = new Set<Style>(['strength','hybrid','bodyweight','cardio','crossfit','emom','tabata','interval','conditioning','finisher','mobility','skill','circuit'])
 const ALLOWED_GOALS = new Set<Goal>(['cut','lean','bulk','recomp'])
 const ALLOWED_INTENSITIES = new Set<Intensity>(['low','moderate','high'])
@@ -193,7 +188,6 @@ function toEquipmentArray(metaEquip: string[], equip: EquipmentProfile): string[
 }
 
 /* ── Load text helpers (used for Preview) ───────────────────────────────────── */
-
 function percentileIndex(n: number, p: number): number {
   if (n <= 0) return 0
   const idx = Math.round((n - 1) * Math.min(1, Math.max(0, p)))
@@ -222,7 +216,6 @@ function rxForBar(movement: string, intensity: Intensity, cap?: number): string 
 }
 
 /* ── Target → suggestion ───────────────────────────────────────────────────── */
-
 async function fetchCurrentTargetText(userId: string): Promise<string | null> {
   const today = dateKeyChicago(new Date())
   const t = await getActiveTarget(userId, today)
@@ -231,7 +224,6 @@ async function fetchCurrentTargetText(userId: string): Promise<string | null> {
 }
 
 /* ── Server → UI robust mapper ─────────────────────────────────────────────── */
-
 function minutesFromParts(warm: any, main: any, fin: any, cool: any, fallback = 40) {
   const w = Array.isArray(warm) ? Math.min(10, Math.max(5, warm.length * 3)) : 6
   const m = Array.isArray(main) ? Math.min(30, Math.max(12, main.length * 8)) : 16
@@ -338,7 +330,6 @@ function mapServerWeekToPlanDays(serverWeek: any[]): PlanDay[] {
 }
 
 /* ── API call (AI path ONLY) ───────────────────────────────────────────────── */
-
 async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promise<PlanDay[] | null> {
   try {
     const payload = {
@@ -349,7 +340,7 @@ async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promis
       intensity:  normalizeIntensity(meta.intensity),
       experience: normalizeExperience(meta.experience),
       focus:      (meta.focusAreas || []).map(toStr).filter(Boolean) as string[],
-      equipment:  toEquipmentArray(meta.equipment, equip), // string[]
+      equipment:  toEquipmentArray(meta.equipment, equip),
     }
 
     if (!payload.minutes || !payload.days || !payload.goal || !payload.style) return null
@@ -372,7 +363,6 @@ async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promis
 }
 
 /* ── UI components ─────────────────────────────────────────────────────────── */
-
 function Btn(props: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button {...props} className={`Btn ${props.className||''}`}>{props.children}</button> }
 function Card({children}:{children:React.ReactNode}){ return <div className="Card">{children}</div> }
 
@@ -408,8 +398,36 @@ function DayCard({d, onHide}:{d:PlanDay; onHide:()=>void}) {
   )
 }
 
-/* ── MAIN (API-only) ───────────────────────────────────────────────────────── */
+function WeeklyPlanSkeleton() {
+  return (
+    <>
+      {Array.from({ length: 7 }).map((_, i) => (
+        <div key={i} className="Card">
+          <div className="DayHeader">
+            <div>
+              <div className="DayTitle">
+                <span className="inline-block h-5 w-28 rounded bg-neutral-200 dark:bg-neutral-800 animate-pulse" />
+              </div>
+              <div className="DaySummary mt-2">
+                <span className="inline-block h-4 w-40 rounded bg-neutral-200 dark:bg-neutral-800 animate-pulse" />
+              </div>
+            </div>
+          </div>
+          <div className="Blocks">
+            {Array.from({ length: 3 }).map((__, j) => (
+              <div key={j} className="Block">
+                <div className="h-4 w-3/4 rounded bg-neutral-200 dark:bg-neutral-800 animate-pulse" />
+                <div className="h-4 w-2/3 rounded bg-neutral-200 dark:bg-neutral-800 animate-pulse mt-2" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </>
+  )
+}
 
+/* ── MAIN (API-only) ───────────────────────────────────────────────────────── */
 export default function WeeklyWorkoutPlan() {
   const [meta, setMeta] = useState<PlanMeta>(() => loadLS<PlanMeta>(LS_META, {
     goal: 'recomp', style: 'hybrid', experience: 'intermediate', intensity: 'moderate',
@@ -418,8 +436,8 @@ export default function WeeklyWorkoutPlan() {
   const [week, setWeek] = useState<PlanDay[]>(() => loadLS<PlanDay[]>(LS_PLAN, []))
   const [loading, setLoading] = useState(false)
   const [equip, setEquip] = useState<EquipmentProfile>(() => loadEquipmentProfile())
-  const [parseText, setParseText] = useState('')        // parser textarea
-  const [previewOpen, setPreviewOpen] = useState(false) // Test Loads toggle
+  const [parseText, setParseText] = useState('')
+  const [previewOpen, setPreviewOpen] = useState(false)
   const [source, setSource] = useState<'AI API' | 'AI API (empty)'>('AI API')
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -500,59 +518,56 @@ export default function WeeklyWorkoutPlan() {
     }
   }
 
-  const [focusInput, setFocusInput] = React.useState('');
+  const [focusInput, setFocusInput] = React.useState('')
 
-function addFocus() {
-  const v = focusInput.trim().toLowerCase();
-  if (!v) return; // ignore empty
-  setMeta(m => ({
-    ...m,
-    focusAreas: Array.from(new Set([...(m.focusAreas || []), v])).slice(0, 6),
-  }));
-  setFocusInput(''); // clear after add
-}
+  function addFocus() {
+    const v = focusInput.trim().toLowerCase()
+    if (!v) return
+    setMeta(m => ({
+      ...m,
+      focusAreas: Array.from(new Set([...(m.focusAreas || []), v])).slice(0, 6),
+    }))
+    setFocusInput('')
+  }
 
-function removeFocus(tag: string) {
-  setMeta(m => ({
-    ...m,
-    focusAreas: (m.focusAreas || []).filter(t => t !== tag),
-  }));
-}
+  function removeFocus(tag: string) {
+    setMeta(m => ({
+      ...m,
+      focusAreas: (m.focusAreas || []).filter(t => t !== tag),
+    }))
+  }
 
   function onClear() { setWeek([]); setNotice(null) }
 
   async function addDayToToday(d: PlanDay) {
-  const userId = await getCurrentUserId().catch(() => null)
-  if (!userId) { alert('Please sign in to save workouts.'); return }
+    const userId = await getCurrentUserId().catch(() => null)
+    if (!userId) { alert('Please sign in to save workouts.'); return }
 
-  // Get/create today's day row (you already have this service)
-  const day = await ensureTodayDay(userId) // -> { id, date, targets, totals }
-  const dateKey = day.date
+    const day = await ensureTodayDay(userId)
+    const dateKey = day.date
 
-  const items = (d.blocks || []).map((b, i) => ({
-    activity: `${d.title} — ${b.kind.charAt(0).toUpperCase() + b.kind.slice(1)}`,
-    minutes: b.minutes ?? null,
-    calories_burned: Math.max(0, Math.round((b.minutes || 10) * 7)),
-    intensity: /* if you track it */ (typeof meta?.intensity === 'string' ? meta.intensity : null),
-    source: 'plan',
-    order_index: i,
-    description: b.text,
-  }))
+    const items = (d.blocks || []).map((b, i) => ({
+      activity: `${d.title} — ${b.kind.charAt(0).toUpperCase() + b.kind.slice(1)}`,
+      minutes: b.minutes ?? null,
+      calories_burned: Math.max(0, Math.round((b.minutes || 10) * 7)),
+      intensity: (typeof meta?.intensity === 'string' ? meta.intensity : null),
+      source: 'plan',
+      order_index: i,
+      description: b.text,
+    }))
 
-  if (!items.length) { alert('No blocks to add for this day.'); return }
+    if (!items.length) { alert('No blocks to add for this day.'); return }
 
-  // ✅ PASS AN OBJECT, not positional params
-  await bulkAddWorkoutsToDay({
-    userId,
-    dayUUID: day.id,   // optional; included if your table has day_id
-    dateKey,           // YYYY-MM-DD
-    items,
-  })
+    await bulkAddWorkoutsToDay({
+      userId,
+      dayUUID: day.id,
+      dateKey,
+      items,
+    })
 
-  eventBus.emit('day:totals', { date: dateKey })
-  alert('Added to Today.')
-}
-
+    eventBus.emit('day:totals', { date: dateKey })
+    alert('Added to Today.')
+  }
 
   return (
     <div className="PlanRoot">
@@ -561,155 +576,182 @@ function removeFocus(tag: string) {
           <Dumbbell className="mr-2" /> Weekly Workout Planner <span className="Source">• {source}</span>
         </div>
 
-        {/* Meta controls */}
-        <div className="Grid">
-          <div className="Col">
-            <label className="Label">Goal</label>
-            <select className="Field" value={meta.goal} onChange={e => setMeta(m => ({...m, goal: e.target.value as Goal}))}>
-              <option value="cut">cut</option><option value="lean">lean</option><option value="recomp">recomp</option><option value="bulk">bulk</option>
-            </select>
-          </div>
-          <div className="Col">
-            <label className="Label">Experience</label>
-            <select className="Field" value={meta.experience} onChange={e => setMeta(m => ({...m, experience: e.target.value as Experience}))}>
-              <option value="beginner">beginner</option><option value="intermediate">intermediate</option><option value="advanced">advanced</option>
-            </select>
-          </div>
-          <div className="Col">
-            <label className="Label">Intensity</label>
-            <select className="Field" value={meta.intensity} onChange={e => setMeta(m => ({...m, intensity: e.target.value as Intensity}))}>
-              <option value="low">low</option><option value="moderate">moderate</option><option value="high">high</option>
-            </select>
-          </div>
-          <div className="Col">
-            <label className="Label">Style</label>
-            <select className="Field" value={meta.style} onChange={e => setMeta(m => ({...m, style: e.target.value as Style}))}>
-              {Array.from(ALLOWED_STYLES).map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="Col">
-            <label className="Label">Days / Week</label>
-            <input className="Field" type="number" min={1} max={6} value={meta.daysPerWeek}
-              onChange={e => setMeta(m => ({...m, daysPerWeek: Math.max(1, Math.min(6, parseInt(e.target.value||'3',10)))}))} />
-          </div>
-          <div className="Col">
-            <label className="Label">Minutes / Day</label>
-            <input className="Field" type="number" min={30} max={75} value={meta.minutesPerDay}
-              onChange={e => setMeta(m => ({...m, minutesPerDay: Math.max(20, Math.min(120, parseInt(e.target.value||'40',10)))}))} />
-          </div>
-        </div>
-
-        {/* Focus Areas */}
-        {/* Focus Areas */}
-<div className="PanelSubhead"><CalendarDays className="mr-1" /> Focus Areas</div>
-<div className="Row">
-  <input
-    className="Field"
-    placeholder="e.g., glutes, hams"
-    value={focusInput}
-    onChange={e => setFocusInput(e.target.value)}
-    onKeyDown={e => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        addFocus();
-      }
-    }}
-  />
-  <Btn onClick={addFocus}>Add</Btn>
-  <div className="Chips">
-    {(meta.focusAreas || []).map(t => (
-      <span key={t} className="Chip">
-        {t} <button onClick={() => removeFocus(t)} title="Remove">×</button>
-      </span>
-    ))}
-  </div>
-</div>
-
-
-        {/* Equipment chips (user-proof) */}
-        <div className="PanelSubhead"><Dumbbell className="mr-1" /> Equipment (chips)</div>
-        <div className="EquipGrid">
-          {/* Dumbbells */}
-          <div className="EquipCol">
-            <div className="Label">Dumbbells (lb)</div>
-            <div className="ChipRow">
-              {equip.dumbbells.map(n =>
-                <span key={`db-${n}`} className="Chip">{n} <button onClick={() => removeDB(n)}>×</button></span>
-              )}
+        {/* Controls section (dim while loading) */}
+        <div className={loading ? 'pointer-events-none opacity-70 transition' : 'transition'}>
+          {/* Meta controls */}
+          <div className="Grid">
+            <div className="Col">
+              <label className="Label">Goal</label>
+              <select className="Field" value={meta.goal} onChange={e => setMeta(m => ({...m, goal: e.target.value as Goal}))}>
+                <option value="cut">cut</option><option value="lean">lean</option><option value="recomp">recomp</option><option value="bulk">bulk</option>
+              </select>
             </div>
-            <div className="Row">
-              <input
-                type="number" min={5} max={150} step={5} placeholder="Add e.g. 50" className="Field"
-                onKeyDown={e => {
-                  if (e.key==='Enter'){
-                    const v = parseInt((e.target as HTMLInputElement).value,10)
-                    if(Number.isFinite(v)) addDB(v)
-                    ;(e.target as HTMLInputElement).value=''
-                  }
-                }}
-              />
-              {[10,20,30,40,50,60].map(v => <Btn key={v} onClick={()=>addDB(v)}>{v}</Btn>)}
+            <div className="Col">
+              <label className="Label">Experience</label>
+              <select className="Field" value={meta.experience} onChange={e => setMeta(m => ({...m, experience: e.target.value as Experience}))}>
+                <option value="beginner">beginner</option><option value="intermediate">intermediate</option><option value="advanced">advanced</option>
+              </select>
             </div>
-            <div className="Badge">{equip.dumbbells.length ? '✓ Ready' : '• Add at least one'}</div>
+            <div className="Col">
+              <label className="Label">Intensity</label>
+              <select className="Field" value={meta.intensity} onChange={e => setMeta(m => ({...m, intensity: e.target.value as Intensity}))}>
+                <option value="low">low</option><option value="moderate">moderate</option><option value="high">high</option>
+              </select>
+            </div>
+            <div className="Col">
+              <label className="Label">Style</label>
+              <select className="Field" value={meta.style} onChange={e => setMeta(m => ({...m, style: e.target.value as Style}))}>
+                {Array.from(ALLOWED_STYLES).map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="Col">
+              <label className="Label">Days / Week</label>
+              <input className="Field" type="number" min={1} max={6} value={meta.daysPerWeek}
+                onChange={e => setMeta(m => ({...m, daysPerWeek: Math.max(1, Math.min(6, parseInt(e.target.value||'3',10)))}))} />
+            </div>
+            <div className="Col">
+              <label className="Label">Minutes / Day</label>
+              <input className="Field" type="number" min={30} max={75} value={meta.minutesPerDay}
+                onChange={e => setMeta(m => ({...m, minutesPerDay: Math.max(20, Math.min(120, parseInt(e.target.value||'40',10)))}))} />
+            </div>
           </div>
 
-          {/* Kettlebells */}
-          <div className="EquipCol">
-            <div className="Label">Kettlebells (lb)</div>
-            <div className="ChipRow">
-              {equip.kettlebells.map(n =>
-                <span key={`kb-${n}`} className="Chip">{n} <button onClick={() => removeKB(n)}>×</button></span>
-              )}
-            </div>
-            <div className="Row">
-              <input
-                type="number" min={10} max={106} step={1} placeholder="Add e.g. 35" className="Field"
-                onKeyDown={e => {
-                  if (e.key==='Enter'){
-                    const v = parseInt((e.target as HTMLInputElement).value,10)
-                    if(Number.isFinite(v)) addKB(v)
-                    ;(e.target as HTMLInputElement).value=''
-                  }
-                }}
-              />
-              {[26,35,53].map(v => <Btn key={v} onClick={()=>addKB(v)}>{v}</Btn>)}
-            </div>
-            <div className="Badge">{equip.kettlebells.length ? '✓ Ready' : '• Add at least one'}</div>
-          </div>
-
-          {/* Barbell */}
-          <div className="EquipCol">
-            <div className="Label">Barbell Max (lb cap)</div>
-            <div className="Row">
-              <input
-                type="number" min={45} max={600} step={5} className="Field"
-                value={equip.barbellMax ?? ''}
-                onChange={e => setBarMax(e.target.value === '' ? '' : Number(e.target.value))}
-              />
-              {[315,405].map(v => <Btn key={v} onClick={() => setBarMax(v)}>{v}</Btn>)}
-            </div>
-            <div className="Badge">{typeof equip.barbellMax==='number' ? `✓ Capped at ${equip.barbellMax} lb` : '• Optional (uses classic pairs)'}</div>
-          </div>
-        </div>
-
-        {/* Parser → chips */}
-        <details className="Parser">
-          <summary>Paste equipment text (optional) — auto-parse</summary>
-          <textarea
-            className="Field" rows={3}
-            placeholder="e.g., 10 lb, 20 lb, 30 lb DBs; 35 lb KB; 315 lb in plates"
-            value={parseText}
-            onChange={e => setParseText(e.target.value)}
-          />
+          {/* Focus Areas */}
+          <div className="PanelSubhead"><CalendarDays className="mr-1" /> Focus Areas</div>
           <div className="Row">
-            <Btn onClick={parseAndImport}><ArrowLeftRight className="mr-1" /> Parse → Add chips</Btn>
-            <div className="LegacyNote">Legacy free-text kept (for API): {(meta.equipment||[]).join(', ') || '—'}</div>
+            <input
+              className="Field"
+              placeholder="e.g., glutes, hams"
+              value={focusInput}
+              onChange={e => setFocusInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  addFocus()
+                }
+              }}
+            />
+            <Btn onClick={addFocus}>Add</Btn>
+            <div className="Chips">
+              {(meta.focusAreas || []).map(t => (
+                <span key={t} className="Chip">
+                  {t} <button onClick={() => removeFocus(t)} title="Remove">×</button>
+                </span>
+              ))}
+            </div>
           </div>
-        </details>
 
-        {/* Actions */}
+          {/* Equipment chips (user-proof) */}
+          <div className="PanelSubhead"><Dumbbell className="mr-1" /> Equipment (chips)</div>
+          <div className="EquipGrid">
+            {/* Dumbbells */}
+            <div className="EquipCol">
+              <div className="Label">Dumbbells (lb)</div>
+              <div className="ChipRow">
+                {equip.dumbbells.map(n =>
+                  <span key={`db-${n}`} className="Chip">{n} <button onClick={() => removeDB(n)}>×</button></span>
+                )}
+              </div>
+              <div className="Row">
+                <input
+                  type="number" min={5} max={150} step={5} placeholder="Add e.g. 50" className="Field"
+                  onKeyDown={e => {
+                    if (e.key==='Enter'){
+                      const v = parseInt((e.target as HTMLInputElement).value,10)
+                      if(Number.isFinite(v)) addDB(v)
+                      ;(e.target as HTMLInputElement).value=''
+                    }
+                  }}
+                />
+                {[10,20,30,40,50,60].map(v => <Btn key={v} onClick={()=>addDB(v)}>{v}</Btn>)}
+              </div>
+              <div className="Badge">{equip.dumbbells.length ? '✓ Ready' : '• Add at least one'}</div>
+            </div>
+
+            {/* Kettlebells */}
+            <div className="EquipCol">
+              <div className="Label">Kettlebells (lb)</div>
+              <div className="ChipRow">
+                {equip.kettlebells.map(n =>
+                  <span key={`kb-${n}`} className="Chip">{n} <button onClick={() => removeKB(n)}>×</button></span>
+                )}
+              </div>
+              <div className="Row">
+                <input
+                  type="number" min={10} max={106} step={1} placeholder="Add e.g. 35" className="Field"
+                  onKeyDown={e => {
+                    if (e.key==='Enter'){
+                      const v = parseInt((e.target as HTMLInputElement).value,10)
+                      if(Number.isFinite(v)) addKB(v)
+                      ;(e.target as HTMLInputElement).value=''
+                    }
+                  }}
+                />
+                {[26,35,53].map(v => <Btn key={v} onClick={()=>addKB(v)}>{v}</Btn>)}
+              </div>
+              <div className="Badge">{equip.kettlebells.length ? '✓ Ready' : '• Add at least one'}</div>
+            </div>
+
+            {/* Barbell */}
+            <div className="EquipCol">
+              <div className="Label">Barbell Max (lb cap)</div>
+              <div className="Row">
+                <input
+                  type="number" min={45} max={600} step={5} className="Field"
+                  value={equip.barbellMax ?? ''}
+                  onChange={e => setBarMax(e.target.value === '' ? '' : Number(e.target.value))}
+                />
+                {[315,405].map(v => <Btn key={v} onClick={() => setBarMax(v)}>{v}</Btn>)}
+              </div>
+              <div className="Badge">{typeof equip.barbellMax==='number' ? `✓ Capped at ${equip.barbellMax} lb` : '• Optional (uses classic pairs)'}</div>
+            </div>
+          </div>
+
+          {/* Parser → chips */}
+          <details className="Parser">
+            <summary>Paste equipment text (optional) — auto-parse</summary>
+            <textarea
+              className="Field" rows={3}
+              placeholder="e.g., 10 lb, 20 lb, 30 lb DBs; 35 lb KB; 315 lb in plates"
+              value={parseText}
+              onChange={e => setParseText(e.target.value)}
+            />
+            <div className="Row">
+              <Btn onClick={parseAndImport}><ArrowLeftRight className="mr-1" /> Parse → Add chips</Btn>
+              <div className="LegacyNote">Legacy free-text kept (for API): {(meta.equipment||[]).join(', ') || '—'}</div>
+            </div>
+          </details>
+        </div>
+
+        {/* Actions (kept OUTSIDE so the button shows spinner) */}
         <div className="Actions">
-          <Btn onClick={onGenerate} disabled={loading}><Shuffle className="mr-1" /> Generate Plan</Btn>
+          <Btn
+            onClick={onGenerate}
+            disabled={loading}
+            aria-busy={loading}
+            className="inline-flex items-center gap-2"
+          >
+            {loading ? (
+              <>
+                <span
+                  className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+                  aria-hidden="true"
+                />
+                Generating…
+              </>
+            ) : (
+              <>
+                <Shuffle className="mr-1" />
+                Generate Plan
+              </>
+            )}
+          </Btn>
+
+          {/* Screen-reader status (invisible to sighted users) */}
+          <div className="sr-only" aria-live="polite" aria-atomic="true">
+            {loading ? 'Generating your weekly plan…' : ''}
+          </div>
+
           <Btn onClick={onClear}><Recycle className="mr-1" /> Clear</Btn>
           <Btn onClick={() => window.print()}><Printer className="mr-1" /> Print / Export</Btn>
           <Btn onClick={() => setPreviewOpen(p => !p)} title="Preview loads"><Eye className="mr-1" /> Test Loads</Btn>
@@ -741,7 +783,9 @@ function removeFocus(tag: string) {
 
       {/* Week view */}
       <div className="Week">
-        {(!week || week.length === 0) ? (
+        {loading ? (
+          <WeeklyPlanSkeleton />
+        ) : (!week || week.length === 0) ? (
           <div className="Empty">
             <Info className="mr-2" />
             {notice ? 'No workouts to show — see the message above.' : 'Click Generate Plan to fetch workouts from the AI API.'}
@@ -759,59 +803,25 @@ function removeFocus(tag: string) {
       </div>
 
       <style>{`
- /* ---- Inputs: light defaults ---- */
-.Field {
-  color: #0b121a;                          /* dark grey for light theme */
-  background: rgba(255,255,255,0.95);
-  border-color: rgba(0,0,0,0.25);
-}
-.Field::placeholder {
-  color: rgba(0,0,0,0.45);
-}
+/* ---- Inputs: light defaults ---- */
+.Field { color: #0b121a; background: rgba(255,255,255,0.95); border-color: rgba(0,0,0,0.25); }
+.Field::placeholder { color: rgba(0,0,0,0.45); }
 
 /* ---- Inputs: dark theme overrides ---- */
 @media (prefers-color-scheme: dark) {
-  .Field,
-  select.Field,
-  textarea.Field,
-  input.Field {
-    color: #E6EDF3;                         /* brighter text in dark */
-    background: rgba(255,255,255,0.06);     /* subtle dark input bg */
+  .Field, select.Field, textarea.Field, input.Field {
+    color: #E6EDF3;
+    background: rgba(255,255,255,0.06);
     border-color: rgba(255,255,255,0.22);
   }
-  .Field::placeholder {
-    color: rgba(230,237,243,0.55);          /* readable placeholder */
-  }
-
-  /* Select dropdown text/background (some browsers ignore parent color) */
-  select.Field option {
-    color: #E6EDF3;
-    background: #0B0F14;                    /* dropdown panel bg */
-  }
-
-  /* Number inputs (WebKit spin buttons can force light fg) */
-  input[type="number"].Field {
-    color: #E6EDF3;
-  }
-
-  /* Focus state */
-  .Field:focus {
-    outline: none;
-    border-color: rgba(99,179,237,0.7);
-    box-shadow: 0 0 0 3px rgba(99,179,237,0.18);
-  }
-
-  /* Disabled state */
-  .Field:disabled {
-    color: rgba(230,237,243,0.45);
-    background: rgba(255,255,255,0.04);
-    border-color: rgba(255,255,255,0.15);
-  }
+  .Field::placeholder { color: rgba(230,237,243,0.55); }
+  select.Field option { color: #E6EDF3; background: #0B0F14; }
+  input[type="number"].Field { color: #E6EDF3; }
+  .Field:focus { outline: none; border-color: rgba(99,179,237,0.7); box-shadow: 0 0 0 3px rgba(99,179,237,0.18); }
+  .Field:disabled { color: rgba(230,237,243,0.45); background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.15); }
 }
 
-/* Ensure inputs always take clicks even if something overlays */
 .Field { pointer-events: auto; position: relative; z-index: 1; }
-       
 .Panel{padding:16px;border:1px solid rgba(128,128,128,0.25);border-radius:14px;margin-bottom:16px}
 .PanelHeader{font-weight:600;display:flex;align-items:center;margin-bottom:10px}
 .Source{margin-left:8px;font-size:12px;opacity:0.75}

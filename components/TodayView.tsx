@@ -1177,12 +1177,14 @@ async function deleteFoodLocal(id: string) {
         </div>
 
         {/* Macro meters */}
+        {/* Macro meters */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-          <MacroMeter title="Calories" used={totalsWithPreview.calories} goal={currentGoal.calories} unit="kcal" />
-          <MacroMeter title="Protein"  used={totalsWithPreview.protein}  goal={currentGoal.protein}  unit="g" />
-          <MacroMeter title="Carbs"    used={totalsWithPreview.carbs}    goal={currentGoal.carbs}    unit="g" />
-          <MacroMeter title="Fat"      used={totalsWithPreview.fat}      goal={currentGoal.fat}      unit="g" />
+          <MacroMeter title="Calories" used={totalsWithPreview.calories} goal={dailyAllowance} unit="kcal" />
+          <MacroMeter title="Protein"  used={totalsWithPreview.protein}  goal={scaledProteinGoal}  unit="g" />
+          <MacroMeter title="Carbs"    used={totalsWithPreview.carbs}    goal={scaledCarbGoal}    unit="g" />
+          <MacroMeter title="Fat"      used={totalsWithPreview.fat}      goal={scaledFatGoal}      unit="g" />
         </div>
+
 
         {/* Food input */}
         <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 space-y-3 bg-white dark:bg-neutral-900 mb-4">

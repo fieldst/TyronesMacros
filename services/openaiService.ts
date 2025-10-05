@@ -1,7 +1,17 @@
 // services/openaiService.ts
 import type { MacroSet, Profile, Goal } from '../types';
 
-const DEFAULT_MODEL = (import.meta as any).env?.VITE_OPENAI_MODEL || 'gpt-4o-mini';
+/** ──────────────────────────────────────────────────────────────────────────
+ *  Model selection (env-driven) with smart auto-upgrade
+ *  - DEFAULT_MODEL = VITE_OPENAI_MODEL (keep your current key)
+ *  - HEAVY_MODEL   = VITE_OPENAI_MODEL_HEAVY (add this in env)
+ *  - Light calls start on DEFAULT and retry once on HEAVY if timeout/overload
+ *  - Heavy calls start on HEAVY immediately
+ *  ------------------------------------------------------------------------- */
+const DEFAULT_MODEL =
+  (import.meta as any).env?.VITE_OPENAI_MODEL || 'gpt-4o-mini';
+const HEAVY_MODEL =
+  (import.meta as any).env?.VITE_OPENAI_MODEL_HEAVY || 'gpt-4o';
 
 export type TargetOption = {
   label: string;
@@ -11,7 +21,43 @@ export type TargetOption = {
   fat: number;
 };
 
-function getSelectedModel(): string {
+type Purpose =
+  | 'weekly-plan'
+  | 'long-explanation'
+  | 'rationale'
+  | 'light'; // small estimates, swaps, short tips, greetings
+
+function chooseModel(purpose: Purpose, attempt: number): string {
+  // Heavy purposes begin on the heavy model
+  if (
+    purpose === 'weekly-plan' ||
+    purpose === 'long-explanation' ||
+    purpose === 'rationale'
+  ) {
+    return HEAVY_MODEL;
+  }
+  // Light work = start on DEFAULT, retry (if needed) on HEAVY
+  return attempt === 0 ? DEFAULT_MODEL : HEAVY_MODEL;
+}
+
+function isUpgradeWorthyError(err: unknown): boolean {
+  const msg = String((err as any)?.message || '').toLowerCase();
+  const name = String((err as any)?.name || '').toLowerCase();
+  const code = String((err as any)?.code || '').toLowerCase();
+  return (
+    msg.includes('timeout') ||
+    msg.includes('overloaded') ||
+    msg.includes('rate limit') ||
+    msg.includes('too many requests') ||
+    msg.includes('context length') ||
+    msg.includes('maximum context') ||
+    name.includes('timeout') ||
+    code === 'etimedout'
+  );
+}
+
+/** Back-compat: allow local toggle (kept but not required) */
+function getSelectedModelFallback(): string {
   try {
     if (typeof window === 'undefined') return DEFAULT_MODEL;
     const m = localStorage.getItem('selectedModel');
@@ -31,7 +77,7 @@ function extractFirstJson(text: string): any {
   throw new Error('Unable to parse JSON from model response');
 }
 
-/* ---------------- internal helpers ---------------- */
+/* ---------------- low-level helpers ---------------- */
 
 async function fetchJSON(url: string, body: any) {
   const res = await fetch(url, {
@@ -45,46 +91,81 @@ async function fetchJSON(url: string, body: any) {
   return { ok: res.ok, status: res.status, payload, raw };
 }
 
-// Server text generation (shared)
-async function callServer(body: any): Promise<string> {
-  const model = getSelectedModel();
-  const url = '/api/generate'; // dev: Vite proxy -> local API; prod: Vercel function
+/**
+ * Server text generation with smart model selection + retry.
+ * - purpose: guides model choice and retry behavior
+ * - expectJson/jsonSchema/temperature: forwarded to your /api/generate handler
+ */
+async function callServerSmart(
+  body: {
+    prompt: string;
+    system?: string;
+    expectJson?: boolean;
+    jsonSchema?: any;
+    temperature?: number;
+    max_tokens?: number;
+  },
+  purpose: Purpose = 'light'
+): Promise<string> {
+  const url = '/api/generate'; // dev: Vite proxy; prod: Vercel function
 
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 25_000);
+  // attempt 0 (default) → maybe attempt 1 (upgrade)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const chosen =
+      attempt === 0 ? chooseModel(purpose, 0) : chooseModel(purpose, 1);
 
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, ...body }),
-      signal: ac.signal,
-    });
+    // keep legacy localStorage override as a fallback only (doesn't break existing behavior)
+    const selected = getSelectedModelFallback() || chosen;
 
-    // best-effort rate banner
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 25_000);
+
     try {
-      const limit = Number(res.headers.get('X-RateLimit-Limit') || 0);
-      const remaining = Number(res.headers.get('X-RateLimit-Remaining') || 0);
-      const reset = Number(res.headers.get('X-RateLimit-Reset') || 0);
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('rate-update', { detail: { limit, remaining, reset } }));
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // your server expects { model, ...body }
+        body: JSON.stringify({ model: selected, ...body }),
+        signal: ac.signal,
+      });
+
+      // best-effort rate banner
+      try {
+        const limit = Number(res.headers.get('X-RateLimit-Limit') || 0);
+        const remaining = Number(res.headers.get('X-RateLimit-Remaining') || 0);
+        const reset = Number(res.headers.get('X-RateLimit-Reset') || 0);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('rate-update', { detail: { limit, remaining, reset } }));
+        }
+      } catch {}
+
+      const raw = await res.text();
+      let payload: any = null;
+      try { payload = JSON.parse(raw); } catch { payload = { text: raw }; }
+
+      if (!res.ok || payload?.success === false) {
+        const msg = payload?.error || payload?.message || raw || `HTTP ${res.status}`;
+        // If first attempt and error looks upgrade-worthy, retry once on HEAVY
+        if (attempt === 0 && isUpgradeWorthyError({ message: msg })) {
+          continue;
+        }
+        console.error('API /api/generate error:', { status: res.status, msg, payload });
+        throw new Error(msg);
       }
-    } catch {}
 
-    const raw = await res.text();
-    let payload: any = null;
-    try { payload = JSON.parse(raw); } catch { payload = { text: raw }; }
-
-    if (!res.ok || payload?.success === false) {
-      const msg = payload?.error || payload?.message || raw || `HTTP ${res.status}`;
-      console.error('API /api/generate error:', { status: res.status, msg, payload });
-      throw new Error(msg);
+      return payload?.data?.text ?? '';
+    } catch (err) {
+      if (attempt === 0 && isUpgradeWorthyError(err)) {
+        // try once more on HEAVY
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-
-    return payload?.data?.text ?? '';
-  } finally {
-    clearTimeout(timer);
   }
+
+  throw new Error('callServerSmart failed unexpectedly.');
 }
 
 /* ================= Features ================= */
@@ -151,39 +232,115 @@ export async function estimateMacrosForMeal(
   }
 }
 
-export async function getWorkoutCalories(workout: string, profile: Profile): Promise<{ total_calories: number }> {
-  const schema = { name: 'workout_energy', schema: { type: 'object', properties: { total_calories: { type: 'number' }, assumptions: { type: 'string' } }, required: ['total_calories'], additionalProperties: false }, strict: true };
-  const system = 'You are a fitness assistant. Use MET-based logic by activity type/intensity with user weight. Return valid JSON only.';
-  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
-Generate a motivational line that feels different from previous days.`;
-  const text = await callServer({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 });
-  try { const obj = extractFirstJson(text); return { total_calories: +obj.total_calories || 0 }; } catch { return { total_calories: 0 }; }
-}
-
-export async function getSwapSuggestion(remaining: MacroSet): Promise<string> {
-  const system = 'You are a concise nutrition coach.';
-  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
-Generate a motivational line that feels different from previous days.`;
-  return await callServer({ prompt, system, temperature: 0.2 });
-}
-
-export async function getTargetOptions(profile: Profile, goal: Goal): Promise<{ options: TargetOption[]; notes: string }> {
+/** Workout energy estimate via /api/generate (JSON schema) */
+export async function getWorkoutCalories(
+  workout: string,
+  profile: Profile
+): Promise<{ total_calories: number }> {
   const schema = {
-    name: 'target_options',
-    schema: { type: 'object',
+    name: 'workout_energy',
+    schema: {
+      type: 'object',
       properties: {
-        notes: { type: 'string' },
-        options: { type: 'array', items: { type: 'object',
-          properties: { label: { type: 'string' }, calories: { type: 'number' }, protein: { type: 'number' }, carbs: { type: 'number' }, fat: { type: 'number' } },
-          required: ['label','calories','protein','carbs','fat'], additionalProperties: false } }
+        total_calories: { type: 'number' },
+        assumptions: { type: 'string' }
       },
-      required: ['options','notes'], additionalProperties: false },
+      required: ['total_calories'],
+      additionalProperties: false
+    },
     strict: true
   };
-  const system = 'You are a nutrition assistant. Compute BMR via Mifflin-St Jeor and TDEE via activity factor; set targets per goal (maintain≈TDEE, cut≈-15%, recomp≈-5%, gain≈+10%). Protein 0.7–1.0 g/lb (middle). Fat 20–30% kcal; rest carbs. Return JSON per schema.';
-  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
-Generate a motivational line that feels different from previous days.`;
-  const text = await callServer({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 });
+
+  const system =
+    'You are a fitness assistant. Use MET-based logic by activity type and intensity. ' +
+    'Factor in user sex, age, height, weight when available. Return valid JSON only.';
+
+  const profileLine = `sex=${profile.sex ?? 'unknown'}, age=${profile.age ?? 'unknown'}, ` +
+                      `height_in=${profile.height_in ?? 'unknown'}, weight_lbs=${profile.weight_lbs ?? 'unknown'}, ` +
+                      `activity_level=${profile.activity_level ?? 'unknown'}`;
+
+  const prompt =
+    `Estimate total calories burned for this workout entry, including reasonable assumptions for pace/intensity:\n` +
+    `Workout: ${workout}\n` +
+    `User profile: ${profileLine}\n` +
+    `Return JSON matching the schema.`;
+
+  const text = await callServerSmart(
+    { prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 },
+    'light'
+  );
+
+  try {
+    const obj = extractFirstJson(text);
+    return { total_calories: Math.max(0, Math.round(+obj.total_calories || 0)) };
+  } catch {
+    return { total_calories: 0 };
+  }
+}
+
+/** Quick swap / tip text */
+export async function getSwapSuggestion(remaining: MacroSet): Promise<string> {
+  const system = 'You are a concise nutrition coach. Keep answers short and practical.';
+  const prompt =
+    `Given these remaining macros for the day, suggest ONE quick food swap or snack idea:\n` +
+    `Remaining: calories=${remaining.calories}, protein=${remaining.protein}g, carbs=${remaining.carbs}g, fat=${remaining.fat}g.\n` +
+    `Prefer budget-friendly, widely available foods. Limit to 1–2 short sentences.`;
+
+  return await callServerSmart({ prompt, system, temperature: 0.2 }, 'light');
+}
+
+/** Target option presets (JSON) – this is a heavier reasoning task */
+export async function getTargetOptions(
+  profile: Profile,
+  goal: Goal
+): Promise<{ options: TargetOption[]; notes: string }> {
+  const schema = {
+    name: 'target_options',
+    schema: {
+      type: 'object',
+      properties: {
+        notes: { type: 'string' },
+        options: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              calories: { type: 'number' },
+              protein: { type: 'number' },
+              carbs: { type: 'number' },
+              fat: { type: 'number' }
+            },
+            required: ['label','calories','protein','carbs','fat'],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ['options','notes'],
+      additionalProperties: false
+    },
+    strict: true
+  };
+
+  const system =
+    'You are a nutrition assistant. Compute BMR via Mifflin–St Jeor and TDEE via activity factor. ' +
+    'Set calorie targets based on goal (maintain≈TDEE, cut≈-15%, recomp≈-5%, gain≈+10%). ' +
+    'Protein 0.7–1.0 g/lb (choose the middle). Fat 20–30% kcal; rest carbs. Return JSON per schema.';
+
+  const profileLine = `sex=${profile.sex ?? 'unknown'}, age=${profile.age ?? 'unknown'}, ` +
+                      `height_in=${profile.height_in ?? 'unknown'}, weight_lbs=${profile.weight_lbs ?? 'unknown'}, ` +
+                      `activity_level=${profile.activity_level ?? 'unknown'}`;
+
+  const prompt =
+    `Create 3–5 target options for this user and goal.\n` +
+    `User: ${profileLine}\nGoal: ${goal}\n` +
+    `Explain assumptions briefly in "notes". Return JSON matching the schema.`;
+
+  const text = await callServerSmart(
+    { prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 },
+    'rationale'
+  );
+
   try {
     const parsed = extractFirstJson(text);
     if (!Array.isArray(parsed?.options)) throw new Error('Bad shape');
@@ -257,10 +414,21 @@ export async function getMealCoaching(
     strict: true
   } as const;
 
-  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
-Generate a motivational line that feels different from previous days.`;
+  const profileLine = `sex=${profile.sex ?? 'unknown'}, age=${profile.age ?? 'unknown'}, ` +
+                      `height_in=${profile.height_in ?? 'unknown'}, weight_lbs=${profile.weight_lbs ?? 'unknown'}, ` +
+                      `activity_level=${profile.activity_level ?? 'unknown'}`;
 
-  const text = await callServer({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 });
+  const prompt =
+    `Meal: ${mealText}\n` +
+    `User profile: ${profileLine}\n` +
+    `Current targets (kcal/protein/carbs/fat): ${targets.calories}/${targets.protein}/${targets.carbs}/${targets.fat}\n` +
+    `Remaining before this meal: kcal=${remainingBefore.calories}, P=${remainingBefore.protein}, C=${remainingBefore.carbs}, F=${remainingBefore.fat}\n` +
+    `Give 2–4 short suggestions and 1–2 "better_alternatives". Return JSON per schema.`;
+
+  const text = await callServerSmart(
+    { prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 },
+    'light'
+  );
 
   try {
     const parsed = extractFirstJson(text);
@@ -279,6 +447,7 @@ Generate a motivational line that feels different from previous days.`;
   }
 }
 
+/** Short, motivational greeting */
 export async function getDailyGreeting(
   name: string,
   dateKey: string,
@@ -287,19 +456,19 @@ export async function getDailyGreeting(
   const system =
     'You are a concise, uplifting fitness & nutrition coach. ' +
     'Write ONE short motivational phrase that feels unique for this day. ' +
-    'Incorporate variety based on time of day (morning, afternoon, evening). ' +
-    'Keep it actionable, positive, and specific to daily adherence. ' +
-    'Make it very uplifting without being to generic. ' +
-    'Constraints: 6–16 words, no emojis, no hashtags, no quotes, present-tense only.';
+    'Consider time of day. 6–16 words. No emojis, no hashtags, no quotes.';
 
-  const prompt = `User: ${name || 'friend'}, Date: ${dateKey}, Hour: ${hour}.
-Generate a motivational line that feels different from previous days.`;
+  const prompt =
+    `User: ${name || 'friend'}\n` +
+    `Date: ${dateKey}\n` +
+    `Hour: ${hour}\n` +
+    `Write the line now.`;
 
-  const line = await callServer({ prompt, system, temperature: 0.7 });
+  const line = await callServerSmart({ prompt, system, temperature: 0.7 }, 'light');
   return (line || '').toString();
 }
 
-/* --- plan week --- */
+/* --- plan week (server route) --- */
 export type PlanWeekOptions = {
   goal: 'cut'|'lean'|'maintain'|'bulk';
   style: 'HIIT'|'cardio'|'strength+cardio'|'CrossFit';

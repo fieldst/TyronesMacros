@@ -6,7 +6,6 @@ import TodayView from './components/TodayView'
 import HistoryView from './components/HistoryView'
 import TargetsView from './components/TargetsView'
 import RateBanner from './components/RateBanner'
-import ModelSelector from './components/ModelSelector'
 import AuthModal from './components/AuthModal'
 import WeeklyWorkoutPlan from "./components/WeeklyWorkoutPlan"
 import './lib/legacyGlue'
@@ -79,6 +78,26 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateStr])
 
+  useEffect(() => {
+  const vv = (window as any).visualViewport;
+  if (!vv) return;
+
+  const update = () => {
+    // How much the soft keyboard overlaps the bottom of the screen
+    const overlap = Math.max(0, (window.innerHeight - vv.height - vv.offsetTop));
+    document.documentElement.style.setProperty('--kb-offset', `${overlap}px`);
+  };
+
+  update();
+  vv.addEventListener('resize', update);
+  vv.addEventListener('scroll', update);
+  return () => {
+    vv.removeEventListener('resize', update);
+    vv.removeEventListener('scroll', update);
+  };
+}, []);
+
+
   async function getDailyTargetsForToday(): Promise<MacroSet | null> {
     try {
       const { getCurrentUserId } = await import('./auth')
@@ -101,7 +120,8 @@ export default function App() {
   function openSignUp() { setAuthMode('sign-up'); setAuthOpen(true) }
 
   return (
-    <div className="min-h-[100svh] bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 pb-[calc(env(safe-area-inset-bottom)+80px)]">
+    <div className="min-h-[100dvh] bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 pb-[calc(env(safe-area-inset-bottom)+80px)]">
+
 
       <header className="sticky top-0 z-40 border-b border-zinc-200/60 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur">
         <div className="mx-auto w-full max-w-[800px] px-4 h-14 flex items-center gap-3">
@@ -109,7 +129,7 @@ export default function App() {
 
           <div className="flex flex-wrap gap-2 order-1 sm:order-2 w-full sm:w-auto items-center justify-end">
             <ThemeToggle />
-            <ModelSelector />
+            
             {displayName ? (
               <button
                 onClick={() => signOut()}
@@ -165,22 +185,68 @@ export default function App() {
 
       <RateBanner />
 
-      <nav className="fixed bottom-0 inset-x-0 z-40 border-t border-zinc-200/60 dark:border-zinc-800/80 bg-white/95 dark:bg-zinc-950/95 backdrop-blur">
-        <div className="mx-auto w-full max-w-[800px] grid grid-cols-4">
-          <button onClick={() => setTab('today')} className={`h-[64px] flex flex-col items-center justify-center text-xs ${tab === 'today' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}>
-            <span>Today</span>
-          </button>
-          <button onClick={() => setTab('history')} className={`h-[64px] flex flex-col items-center justify-center text-xs ${tab === 'history' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}>
-            <span>History</span>
-          </button>
-          <button onClick={() => setTab('targets')} className={`h-[64px] flex flex-col items-center justify-center text-xs ${tab === 'targets' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}>
-            <span>Targets</span>
-          </button>
-          <button onClick={() => setTab('plan')} className={`h-[64px] flex flex-col items-center justify-center text-xs ${tab === 'plan' ? 'font-semibold' : 'opacity-70 hover:opacity-100'}`}>
-            <span>Weekly Plan</span>
-          </button>
-        </div>
-      </nav>
+      <nav
+  className="fixed bottom-0 inset-x-0 z-40 border-t bg-white/95 dark:bg-zinc-950/95 backdrop-blur will-change-transform"
+  style={{
+    // keep the bar glued to the bottom even when the keyboard opens
+    transform: 'translateY(var(--kb-offset, 0px))',
+    // safe-area padding for iPhone
+    paddingBottom: 'max(env(safe-area-inset-bottom), 8px)',
+  }}
+  role="tablist"
+  aria-label="Primary"
+>
+  <div className="mx-auto w-full max-w-[800px] grid grid-cols-4">
+    <button
+      onClick={() => setTab('today')}
+      role="tab"
+      aria-selected={tab === 'today'}
+      aria-current={tab === 'today' ? 'page' : undefined}
+      className={`h-14 px-4 flex flex-col items-center justify-center text-base focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm ${
+        tab === 'today' ? 'font-semibold' : 'opacity-70 hover:opacity-100'
+      }`}
+    >
+      <span>Today</span>
+    </button>
+
+    <button
+      onClick={() => setTab('history')}
+      role="tab"
+      aria-selected={tab === 'history'}
+      aria-current={tab === 'history' ? 'page' : undefined}
+      className={`h-14 px-4 flex flex-col items-center justify-center text-base focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm ${
+        tab === 'history' ? 'font-semibold' : 'opacity-70 hover:opacity-100'
+      }`}
+    >
+      <span>History</span>
+    </button>
+
+    <button
+      onClick={() => setTab('targets')}
+      role="tab"
+      aria-selected={tab === 'targets'}
+      aria-current={tab === 'targets' ? 'page' : undefined}
+      className={`h-14 px-4 flex flex-col items-center justify-center text-base focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm ${
+        tab === 'targets' ? 'font-semibold' : 'opacity-70 hover:opacity-100'
+      }`}
+    >
+      <span>Targets</span>
+    </button>
+
+    <button
+      onClick={() => setTab('plan')}
+      role="tab"
+      aria-selected={tab === 'plan'}
+      aria-current={tab === 'plan' ? 'page' : undefined}
+      className={`h-14 px-4 flex flex-col items-center justify-center text-base focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm ${
+        tab === 'plan' ? 'font-semibold' : 'opacity-70 hover:opacity-100'
+      }`}
+    >
+      <span>Weekly Plan</span>
+    </button>
+  </div>
+</nav>
+
     </div>
   )
 }

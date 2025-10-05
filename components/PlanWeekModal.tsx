@@ -32,7 +32,7 @@ export default function PlanWeekModal({
     setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]);
   }
 
-  async function handleGenerate() {
+    async function handleGenerate() {
     setLoading(true); setError(null);
     try {
       const payload: PlanWeekOptions = {
@@ -53,109 +53,60 @@ export default function PlanWeekModal({
   }
 
   return (
-    <Modal isOpen={open} onClose={onClose} title="Plan your week">
-      <div className="space-y-4 text-neutral-900 dark:text-neutral-100 bg-white dark:bg-neutral-900">
-        {error && <div className="text-red-600 dark:text-red-400 text-sm">{error}</div>}
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col text-sm">
-            Style
-            <select
-              className="mt-1 rounded-xl border p-2 bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 border-neutral-200 dark:border-neutral-800"
-              value={style}
-              onChange={e=>setStyle(e.target.value as any)}
-            >
-              <option>HIIT</option>
-              <option>cardio</option>
-              <option>strength+cardio</option>
-              <option>CrossFit</option>
-            </select>
-          </label>
-          <label className="flex flex-col text-sm">
-            Goal
-            <select
-              className="mt-1 rounded-xl border p-2 bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 border-neutral-200 dark:border-neutral-800"
-              value={goal}
-              onChange={e=>setGoal(e.target.value as any)}
-            >
-              <option>cut</option>
-              <option>lean</option>
-              <option>maintain</option>
-              <option>bulk</option>
-            </select>
-          </label>
-          <label className="flex flex-col text-sm">
-            Minutes per session
-            <input
-              type="number"
-              min={15}
-              max={120}
-              className="mt-1 rounded-xl border p-2 bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 border-neutral-200 dark:border-neutral-800"
-              value={minutes}
-              onChange={e=>setMinutes(parseInt(e.target.value || '30'))}
+  <Modal isOpen={open} onClose={loading ? () => {} : onClose} title="Plan my week">
+
+      {/* make the panel relatively positioned so the overlay can cover it */}
+      <div className="relative p-4">
+        {/* polite status for screen readers */}
+        <div className="sr-only" aria-live="polite" aria-atomic="true">
+          {loading ? 'Generating your weekly plan…' : ''}
+        </div>
+
+        {/* translucent overlay + spinner when loading */}
+        {loading && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 rounded-2xl">
+            <span
+              className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent"
+              aria-hidden="true"
             />
-          </label>
-          <label className="flex flex-col text-sm">
-            Experience
-            <select
-              className="mt-1 rounded-xl border p-2 bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 border-neutral-200 dark:border-neutral-800"
-              value={experience}
-              onChange={e=>setExperience(e.target.value as any)}
-            >
-              <option>beginner</option>
-              <option>intermediate</option>
-              <option>advanced</option>
-            </select>
-          </label>
-          <label className="col-span-2 flex flex-col text-sm">
-            Equipment (comma-separated)
-            <input
-              className="mt-1 rounded-xl border p-2 bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 border-neutral-200 dark:border-neutral-800"
-              value={equipmentInput}
-              onChange={e=>setEquipmentInput(e.target.value)}
-              placeholder="assault bike, kettlebell, dumbbells, barbell"
-            />
-          </label>
-          <div className="col-span-2">
-            <div className="text-sm mb-1">Available days</div>
-            <div className="flex flex-wrap gap-2">
-              {DAYS.map(d => {
-                const active = days.includes(d);
-                return (
-                  <button
-                    key={d}
-                    type="button"
-                    onClick={() => toggleDay(d)}
-                    className={[
-                      'px-3 py-1 rounded-full border',
-                      'border-neutral-200 dark:border-neutral-800',
-                      active
-                        ? 'bg-black text-white dark:bg-white dark:text-black'
-                        : 'bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100'
-                    ].join(' ')}
-                  >
-                    {d}
-                  </button>
-                );
-              })}
-            </div>
           </div>
-        </div>
-        <div className="flex gap-3 justify-end">
-          <button
-            className="px-4 py-2 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900"
-            onClick={onClose}
-          >
-            Close
-          </button>
-          <button
-            className="px-4 py-2 rounded-xl bg-black text-white dark:bg-white dark:text-black disabled:opacity-60"
-            disabled={loading}
-            onClick={handleGenerate}
-          >
-            {loading ? 'Generating…' : 'Generate plan'}
-          </button>
-        </div>
+        )}
+
+        {/* disable all inputs while loading */}
+        <fieldset disabled={loading} aria-busy={loading} className={loading ? 'opacity-60' : ''}>
+          {/* ...inputs... (leave your existing inputs untouched) */}
+
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900"
+            >
+              Close
+            </button>
+
+            <button
+              onClick={handleGenerate}
+              disabled={loading}
+              className="px-4 py-2 rounded-xl bg-black text-white dark:bg-white dark:text-black disabled:opacity-60 inline-flex items-center gap-2"
+            >
+              {loading && (
+                <span
+                  className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+                  aria-hidden="true"
+                />
+              )}
+              {loading ? 'Generating…' : 'Generate plan'}
+            </button>
+          </div>
+          {error && (
+  <div className="mt-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300">
+    {error}
+  </div>
+)}
+
+        </fieldset>
       </div>
     </Modal>
   );
+
 }
