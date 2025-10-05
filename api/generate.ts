@@ -16,25 +16,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       temperature = 0.7,
       expectJson = false,
     } = (req.body ?? {}) as {
-      prompt?: string; system?: string; model?: string; temperature?: number; expectJson?: boolean;
+      prompt?: string;
+      system?: string;
+      model?: string;
+      temperature?: number;
+      expectJson?: boolean;
     };
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+    // Type-safe roles for the current OpenAI SDK
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: 'system', content: system || '' },
-    { role: 'user',   content: prompt || '' },
-  ];
+      { role: 'system', content: system || '' },
+      { role: 'user', content: prompt || '' },
+    ];
 
-    const out = await client.chat.completions.create({
-    model,
-    messages,
-    temperature,
-    ...(expectJson ? { response_format: { type: 'json_object' as const } } : {}),
-});
+    const params: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
+      model,
+      messages,
+      temperature,
+      ...(expectJson ? { response_format: { type: 'json_object' as const } } : {}),
+    };
 
     const out = await client.chat.completions.create(params);
     const text = out.choices?.[0]?.message?.content ?? '';
+
     res.setHeader('Content-Type', 'application/json');
     return res.status(200).json({ success: true, data: { text } });
   } catch (err: any) {
