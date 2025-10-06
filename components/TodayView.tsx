@@ -30,6 +30,24 @@ import {
 } from '../services/openaiService';
 
 // ---- Snapshot to stabilize first paint and prevent flicker ----
+
+// Optimistically adjust workoutCals/allowance/remaining in local state
+function applyOptimisticWorkoutDelta(delta: number) {
+  if (!delta) return;
+  setDay(prev => {
+    if (!prev) return prev;
+    const t = prev.totals || { foodCals: 0, workoutCals: 0, allowance: 0, remaining: 0 };
+    const workoutCals = Math.max(0, Math.round((t.workoutCals || 0) + delta));
+    // Allowance/remaining increase with burn; keep them non-negative
+    const allowance = Math.max(0, Math.round((t.allowance || (currentGoal?.calories || 0)) + delta));
+    const remaining = Math.max(0, Math.round((t.remaining || (currentGoal?.calories || 0)) + delta));
+    return { ...prev, totals: { ...t, workoutCals, allowance, remaining } };
+  });
+}
+
+
+
+
 const SNAP_KEY = 'tm:lastDaySnapshot';
 type DaySnapshot = {
   dayId: string;
@@ -185,6 +203,17 @@ export default function TodayView({
 
   const [dayKey, setDayKey] = useState<string>(''); // YYYY-MM-DD
   const [day, setDay] = useState<DayRow | null>(null);
+  function applyOptimisticWorkoutDelta(delta: number) {
+  if (!delta) return;
+  setDay(prev => {
+    if (!prev) return prev;
+    const t = prev.totals || { foodCals: 0, workoutCals: 0, allowance: 0, remaining: 0 };
+    const workoutCals = Math.max(0, Math.round((t.workoutCals || 0) + delta));
+    const allowance = Math.max(0, Math.round((t.allowance || (currentGoal?.calories || 0)) + delta));
+    const remaining = Math.max(0, Math.round((t.remaining || (currentGoal?.calories || 0)) + delta));
+    return { ...prev, totals: { ...t, workoutCals, allowance, remaining } };
+  });
+}
   const [dayId, setDayId] = useState<string | null>(null);
 
   const [mealText, setMealText] = useState('');
@@ -325,7 +354,7 @@ const [fiveDayMeals, setFiveDayMeals] = useState<any[] | null>(null)
       await recalcAndPersistDay(uid, d)
 
        //  add this so meters/lists update immediately
-      eventBus.emit('day:totals')
+      eventBus.emit('day:totals', { dayId, totals: (d as any)?.totals })
       // if you have a reloadDay() in scope, call it so the UI lists update
       // await reloadDay()
     } catch (e) {
@@ -349,24 +378,7 @@ const [fiveDayMeals, setFiveDayMeals] = useState<any[] | null>(null)
     return () => { canceled = true; sub?.subscription?.unsubscribe?.(); };
   }, []);
 
-  useEffect(() => {
-  const off = eventBus.on('workout:upsert', async () => {
-    try {
-      const uid = await getCurrentUserId()
-      if (!uid) return
-      const d = dateKeyChicago()
-      await recalcAndPersistDay(uid, d)
-
-      // If you have a day reload helper, call it so meters/list update:
-      try { (window as any)?.eventBus?.emit?.('day:totals') } catch {}
-      // If your component exposes reloadDay(), call it:
-      // await reloadDay()
-    } catch (e) {
-      console.error('Failed to refresh totals after workout upsert', e)
-    }
-  })
-  return () => off()
-}, [])
+  
 
 useEffect(() => {
   (async () => {
@@ -975,6 +987,7 @@ async function deleteFoodLocal(id: string) {
       try {
         // let other views react (if they listen)
         eventBus.emit('day:totals', { dayId, totals: (d as any).totals });
+
       } catch {}
     }
 
@@ -987,19 +1000,31 @@ async function deleteFoodLocal(id: string) {
 }
 
   async function addWorkout() {
-    if (!workoutText.trim() || !userId || !dayId) return;
-    setBusy(true);
-    try {
-      const kcal = await estimateWorkoutKcalSmart(workoutText.trim(), profile);
-      await upsertWorkoutEntry({ userId, dayId, kind: workoutText.trim(), calories: kcal, meta: { source: 'ai_estimate' } });
-      setWorkoutText(''); setPreviewWorkoutKcal(0);
-      showToast(`Added +${kcal} kcal to allowance`);
-      await loadWorkouts(userId, dayKey);
-      const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-      if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
-    } catch (e: any) { openCoaching(e?.message || 'Could not estimate workout burn.'); }
-    finally { setBusy(false); }
-  }
+  if (!workoutText.trim() || !userId || !dayId) return;
+  setBusy(true);
+  try {
+    const kcal = await estimateWorkoutKcalSmart(workoutText.trim(), profile);
+
+    // ⬅️ NEW: optimistic UI update
+    applyOptimisticWorkoutDelta(kcal);
+
+    await upsertWorkoutEntry({ userId, dayId, kind: workoutText.trim(), calories: kcal, meta: { source: 'ai_estimate' } });
+    setWorkoutText(''); setPreviewWorkoutKcal(0);
+    showToast(`Added +${kcal} kcal to allowance`);
+    await loadWorkouts(userId, dayKey);
+
+    const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
+    if (d) {
+      setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+
+      // ⬅️ NEW: broadcast with payload so other listeners get the fresh totals
+      try { eventBus.emit('day:totals', { dayId, totals: (d as any).totals }); } catch {}
+    }
+  } catch (e: any) {
+    openCoaching(e?.message || 'Could not estimate workout burn.');
+  } finally { setBusy(false); }
+}
+
 
   function startEditWorkout(w: WorkoutRow) {
     setEditWoId(w.id); setEditWoKind(w.kind); setEditWoKcal(w.calories); setEditWoOpen(true);
@@ -1010,27 +1035,57 @@ async function deleteFoodLocal(id: string) {
     try { const kcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile); setEditWoKcal(kcal); showToast(`Estimated ~${kcal} kcal`); }
     finally { setBusy(false); }
   }
-  async function saveEditWorkout() {
-    if (!userId || !dayId || !editWoId) return;
-    setBusy(true);
-    try {
-      const aiKcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile);
-      setEditWoKcal(aiKcal);
-      await upsertWorkoutEntry({ id: editWoId, userId, dayId, kind: editWoKind.trim(), calories: Math.max(0, aiKcal), meta: { source: 'manual_edit_ai_estimated' } });
-      await loadWorkouts(userId, dayKey);
-      const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-      if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
-      setEditWoOpen(false); showToast(`Saved with AI-estimated ${aiKcal} kcal`);
-    } finally { setBusy(false); }
-  }
-  function cancelEditWorkout() { setEditWoOpen(false); setEditWoId(null); }
-  async function removeWorkout(id: string) {
-    if (!userId || !dayId) return;
-    await deleteWorkoutEntry({ id, userId, dayId });
+  
+async function saveEditWorkout() {
+  if (!userId || !dayId || !editWoId) return;
+  setBusy(true);
+  try {
+    const oldKcal = Number(editWoKcal || 0);
+    const aiKcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile);
+    setEditWoKcal(aiKcal);
+
+    // ⬅️ NEW: optimistic delta (new - old)
+    applyOptimisticWorkoutDelta(Math.max(0, aiKcal) - Math.max(0, oldKcal));
+
+    await upsertWorkoutEntry({
+      id: editWoId, userId, dayId,
+      kind: editWoKind.trim(),
+      calories: Math.max(0, aiKcal),
+      meta: { source: 'manual_edit_ai_estimated' }
+    });
+
     await loadWorkouts(userId, dayKey);
     const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-    if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+    if (d) {
+      setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+      try { eventBus.emit('day:totals', { dayId, totals: (d as any).totals }); } catch {}
+    }
+    setEditWoOpen(false); showToast(`Saved with AI-estimated ${aiKcal} kcal`);
+  } finally { setBusy(false); }
+}
+
+
+  function cancelEditWorkout() { setEditWoOpen(false); setEditWoId(null); }
+  async function removeWorkout(id: string) {
+  if (!userId || !dayId) return;
+
+  // ⬅️ NEW: find kcal of the row being removed to compute delta
+  const row = workouts.find(w => w.id === id);
+  const kcal = row ? Math.max(0, Number(row.calories || 0)) : 0;
+
+  // ⬅️ NEW: optimistic decrease
+  if (kcal) applyOptimisticWorkoutDelta(-kcal);
+
+  await deleteWorkoutEntry({ id, userId, dayId });
+  await loadWorkouts(userId, dayKey);
+
+  const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
+  if (d) {
+    setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+    try { eventBus.emit('day:totals', { dayId, totals: (d as any).totals }); } catch {}
   }
+}
+
 
   async function suggestSwap() {
     try {
@@ -1067,17 +1122,28 @@ async function deleteFoodLocal(id: string) {
       setWoSuggestions(scored);
     } finally { setBusy(false); }
   }
+ 
   async function addSuggestedWorkout(title: string, kcal: number) {
-    if (!userId || !dayId) return;
-    setBusy(true);
-    try {
-      await upsertWorkoutEntry({ userId, dayId, kind: title, calories: Math.max(0, Math.round(kcal || 0)), meta: { source: 'ai_suggestion' } });
-      await loadWorkouts(userId, dayKey);
-      const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-      if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
-      showToast(`Added: ${title} (+${kcal} kcal)`); setSuggestOpen(false);
-    } finally { setBusy(false); }
-  }
+  if (!userId || !dayId) return;
+  setBusy(true);
+  try {
+    const k = Math.max(0, Math.round(kcal || 0));
+
+    // ⬅️ NEW: optimistic bump
+    applyOptimisticWorkoutDelta(k);
+
+    await upsertWorkoutEntry({ userId, dayId, kind: title, calories: k, meta: { source: 'ai_suggestion' } });
+    await loadWorkouts(userId, dayKey);
+
+    const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
+    if (d) {
+      setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+      try { eventBus.emit('day:totals', { dayId, totals: (d as any).totals }); } catch {}
+    }
+    showToast(`Added: ${title} (+${k} kcal)`); setSuggestOpen(false);
+  } finally { setBusy(false); }
+}
+
 
   async function coachMealRow(m: MealRow) {
     try {
