@@ -1,4 +1,3 @@
-
 import * as __EventBusModule from '../lib/eventBus';
 const eventBus = (typeof __EventBusModule !== 'undefined' && (__EventBusModule as any).eventBus)
   ? (__EventBusModule as any).eventBus
@@ -30,24 +29,6 @@ import {
 } from '../services/openaiService';
 
 // ---- Snapshot to stabilize first paint and prevent flicker ----
-
-// Optimistically adjust workoutCals/allowance/remaining in local state
-function applyOptimisticWorkoutDelta(delta: number) {
-  if (!delta) return;
-  setDay(prev => {
-    if (!prev) return prev;
-    const t = prev.totals || { foodCals: 0, workoutCals: 0, allowance: 0, remaining: 0 };
-    const workoutCals = Math.max(0, Math.round((t.workoutCals || 0) + delta));
-    // Allowance/remaining increase with burn; keep them non-negative
-    const allowance = Math.max(0, Math.round((t.allowance || (currentGoal?.calories || 0)) + delta));
-    const remaining = Math.max(0, Math.round((t.remaining || (currentGoal?.calories || 0)) + delta));
-    return { ...prev, totals: { ...t, workoutCals, allowance, remaining } };
-  });
-}
-
-
-
-
 const SNAP_KEY = 'tm:lastDaySnapshot';
 type DaySnapshot = {
   dayId: string;
@@ -186,6 +167,144 @@ async function estimateWorkoutKcalSmart(text: string, profile: Profile): Promise
 
 // 🟣 Planner constants
 const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] as const;
+// --- Smart Workout Builder (chips + a couple inputs) ---
+function Chip({
+  label, selected, onClick,
+}: { label: string; selected: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-xs px-2 py-1 rounded-full border ${
+        selected
+          ? 'bg-black text-white dark:bg-white dark:text-black'
+          : 'border-neutral-200 dark:border-neutral-800'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
+function WorkoutQuickForm({
+  profile,
+  onApply,   // (text: string) => void
+  onPreview, // (kcal: number) => void
+}: {
+  profile: Profile
+  onApply: (text: string) => void
+  onPreview: (kcal: number) => void
+}) {
+  const [kind, setKind] = React.useState<'walk'|'run'|'bike'|'row'|'swim'|'strength'|'hiit'|'other'>('run')
+  const [intensity, setIntensity] = React.useState<'easy'|'moderate'|'hard'>('moderate')
+  const [minutes, setMinutes] = React.useState<number>(30)
+  const [distance, setDistance] = React.useState<number | ''>('') // miles (optional)
+  const [note, setNote] = React.useState<string>('')
+
+  // strength extras (optional)
+  const [sets, setSets] = React.useState<number | ''>('')
+  const [reps, setReps] = React.useState<number | ''>('')
+  const [weight, setWeight] = React.useState<number | ''>('')
+
+  const buildText = React.useCallback(() => {
+    const base = `${minutes} min ${kind} ${intensity}`
+    const dist = distance !== '' ? `, ${distance} mile${Number(distance) === 1 ? '' : 's'}` : ''
+    const s = (kind === 'strength' && sets !== '' && reps !== '')
+      ? `, ${sets}x${reps}${weight !== '' ? ` @ ${weight}lb` : ''}`
+      : ''
+    const n = note.trim() ? ` — ${note.trim()}` : ''
+    return `${base}${dist}${s}${n}`.replace(/\s+/g, ' ').trim()
+  }, [minutes, kind, intensity, distance, sets, reps, weight, note])
+
+  async function preview() {
+    const text = buildText()
+    try {
+      const kcal = await estimateWorkoutKcalSmart(text, profile)
+      onPreview(kcal)
+    } catch {
+      onPreview(0)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-2 space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {(['walk','run','bike','row','swim','strength','hiit','other'] as const).map(k => (
+          <Chip key={k} label={k} selected={kind===k} onClick={() => setKind(k)} />
+        ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <div>
+          <div className="text-[11px] text-neutral-500">Minutes</div>
+          <input type="number" min={5} max={180}
+            className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+            value={minutes} onChange={e=>setMinutes(Math.max(5, Math.min(180, parseInt(e.target.value||'30',10))))}/>
+        </div>
+        <div>
+          <div className="text-[11px] text-neutral-500">Distance (mi)</div>
+          <input type="number" min={0} step="0.1"
+            className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+            value={distance} onChange={e=>setDistance(e.target.value===''? '' : Number(e.target.value))}/>
+        </div>
+        <div>
+          <div className="text-[11px] text-neutral-500">Intensity</div>
+          <div className="flex gap-2">
+            {(['easy','moderate','hard'] as const).map(i => (
+              <Chip key={i} label={i} selected={intensity===i} onClick={() => setIntensity(i)} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {kind === 'strength' && (
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <div className="text-[11px] text-neutral-500">Sets</div>
+            <input type="number" min={1}
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+              value={sets} onChange={e=>setSets(e.target.value===''? '' : Number(e.target.value))}/>
+          </div>
+          <div>
+            <div className="text-[11px] text-neutral-500">Reps</div>
+            <input type="number" min={1}
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+              value={reps} onChange={e=>setReps(e.target.value===''? '' : Number(e.target.value))}/>
+          </div>
+          <div>
+            <div className="text-[11px] text-neutral-500">Weight (lb)</div>
+            <input type="number" min={0}
+              className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+              value={weight} onChange={e=>setWeight(e.target.value===''? '' : Number(e.target.value))}/>
+          </div>
+        </div>
+      )}
+
+      <input
+        className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+        placeholder="Optional note (e.g., intervals, hills, machine, etc.)"
+        value={note} onChange={e=>setNote(e.target.value)}
+      />
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
+          onClick={preview}
+        >
+          Preview calories
+        </button>
+        <button
+          type="button"
+          className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black"
+          onClick={() => onApply(buildText())}
+        >
+          Apply to input
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export default function TodayView({
   profile,
@@ -203,17 +322,6 @@ export default function TodayView({
 
   const [dayKey, setDayKey] = useState<string>(''); // YYYY-MM-DD
   const [day, setDay] = useState<DayRow | null>(null);
-  function applyOptimisticWorkoutDelta(delta: number) {
-  if (!delta) return;
-  setDay(prev => {
-    if (!prev) return prev;
-    const t = prev.totals || { foodCals: 0, workoutCals: 0, allowance: 0, remaining: 0 };
-    const workoutCals = Math.max(0, Math.round((t.workoutCals || 0) + delta));
-    const allowance = Math.max(0, Math.round((t.allowance || (currentGoal?.calories || 0)) + delta));
-    const remaining = Math.max(0, Math.round((t.remaining || (currentGoal?.calories || 0)) + delta));
-    return { ...prev, totals: { ...t, workoutCals, allowance, remaining } };
-  });
-}
   const [dayId, setDayId] = useState<string | null>(null);
 
   const [mealText, setMealText] = useState('');
@@ -354,7 +462,7 @@ const [fiveDayMeals, setFiveDayMeals] = useState<any[] | null>(null)
       await recalcAndPersistDay(uid, d)
 
        //  add this so meters/lists update immediately
-      eventBus.emit('day:totals', { dayId, totals: (d as any)?.totals })
+      eventBus.emit('day:totals')
       // if you have a reloadDay() in scope, call it so the UI lists update
       // await reloadDay()
     } catch (e) {
@@ -378,7 +486,24 @@ const [fiveDayMeals, setFiveDayMeals] = useState<any[] | null>(null)
     return () => { canceled = true; sub?.subscription?.unsubscribe?.(); };
   }, []);
 
-  
+  useEffect(() => {
+  const off = eventBus.on('workout:upsert', async () => {
+    try {
+      const uid = await getCurrentUserId()
+      if (!uid) return
+      const d = dateKeyChicago()
+      await recalcAndPersistDay(uid, d)
+
+      // If you have a day reload helper, call it so meters/list update:
+      try { (window as any)?.eventBus?.emit?.('day:totals') } catch {}
+      // If your component exposes reloadDay(), call it:
+      // await reloadDay()
+    } catch (e) {
+      console.error('Failed to refresh totals after workout upsert', e)
+    }
+  })
+  return () => off()
+}, [])
 
 useEffect(() => {
   (async () => {
@@ -987,7 +1112,6 @@ async function deleteFoodLocal(id: string) {
       try {
         // let other views react (if they listen)
         eventBus.emit('day:totals', { dayId, totals: (d as any).totals });
-
       } catch {}
     }
 
@@ -999,93 +1123,91 @@ async function deleteFoodLocal(id: string) {
   }
 }
 
-  async function addWorkout() {
-  if (!workoutText.trim() || !userId || !dayId) return;
+ async function addWorkout() {
+  if (!workoutText.trim() || !userId) return;
+
+  // ✅ guarantee a valid date key even if dayId hasn't been set yet
+  const safeDayId = dayId || localDateKey();
+
   setBusy(true);
   try {
     const kcal = await estimateWorkoutKcalSmart(workoutText.trim(), profile);
+    await upsertWorkoutEntry({
+      userId,
+      dayId: safeDayId,
+      kind: workoutText.trim(),
+      calories: kcal,
+      meta: { source: 'ai_estimate' },
+    });
 
-    // ⬅️ NEW: optimistic UI update
-    applyOptimisticWorkoutDelta(kcal);
-
-    await upsertWorkoutEntry({ userId, dayId, kind: workoutText.trim(), calories: kcal, meta: { source: 'ai_estimate' } });
-    setWorkoutText(''); setPreviewWorkoutKcal(0);
+    setWorkoutText('');
+    setPreviewWorkoutKcal(0);
     showToast(`Added +${kcal} kcal to allowance`);
+
     await loadWorkouts(userId, dayKey);
+    const { data: d } = await supabase
+      .from('days')
+      .select('id, totals')
+      .eq('id', safeDayId)   // ← safe
+      .maybeSingle();
 
-    const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-    if (d) {
-      setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
-
-      // ⬅️ NEW: broadcast with payload so other listeners get the fresh totals
-      try { eventBus.emit('day:totals', { dayId, totals: (d as any).totals }); } catch {}
-    }
+    if (d) setDay(prev => (prev ? { ...prev, totals: (d as any).totals } : prev));
   } catch (e: any) {
     openCoaching(e?.message || 'Could not estimate workout burn.');
-  } finally { setBusy(false); }
+  } finally {
+    setBusy(false);
+  }
 }
 
-
-  function startEditWorkout(w: WorkoutRow) {
-    setEditWoId(w.id); setEditWoKind(w.kind); setEditWoKcal(w.calories); setEditWoOpen(true);
-  }
-  async function estimateEditWorkoutKcal() {
-    if (!editWoKind.trim()) return;
-    setBusy(true);
-    try { const kcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile); setEditWoKcal(kcal); showToast(`Estimated ~${kcal} kcal`); }
-    finally { setBusy(false); }
-  }
-  
-async function saveEditWorkout() {
-  if (!userId || !dayId || !editWoId) return;
-  setBusy(true);
+// re-add/define this handler so the Edit modal's button works
+const estimateEditWorkoutKcal = React.useCallback(async () => {
+  const title = (editWoKind || '').trim()
+  if (!title) return
+  setBusy(true)
   try {
-    const oldKcal = Number(editWoKcal || 0);
-    const aiKcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile);
-    setEditWoKcal(aiKcal);
+    const kcal = await estimateWorkoutKcalSmart(title, profile)
+    setEditWoKcal(kcal)
+    showToast(`Estimated ~${kcal} kcal`)
+  } finally {
+    setBusy(false)
+  }
+}, [editWoKind, profile])
 
-    // ⬅️ NEW: optimistic delta (new - old)
-    applyOptimisticWorkoutDelta(Math.max(0, aiKcal) - Math.max(0, oldKcal));
-
+  async function saveEditWorkout() {
+  if (!userId || !editWoId) return
+  const safeDayId = dayId || localDateKey()   // <-- safe fallback
+  setBusy(true)
+  try {
+    const aiKcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile)
+    setEditWoKcal(aiKcal)
     await upsertWorkoutEntry({
-      id: editWoId, userId, dayId,
+      id: editWoId,
+      userId,
+      dayId: safeDayId,
       kind: editWoKind.trim(),
       calories: Math.max(0, aiKcal),
       meta: { source: 'manual_edit_ai_estimated' }
-    });
-
-    await loadWorkouts(userId, dayKey);
-    const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-    if (d) {
-      setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
-      try { eventBus.emit('day:totals', { dayId, totals: (d as any).totals }); } catch {}
-    }
-    setEditWoOpen(false); showToast(`Saved with AI-estimated ${aiKcal} kcal`);
-  } finally { setBusy(false); }
+    })
+    await loadWorkouts(userId, dayKey)
+    const { data: d } = await supabase.from('days').select('id, totals').eq('id', safeDayId).maybeSingle()
+    if (d) setDay(prev => (prev ? { ...prev, totals: (d as any).totals } : prev))
+    setEditWoOpen(false)
+    showToast(`Saved with AI-estimated ${aiKcal} kcal`)
+  } finally {
+    setBusy(false)
+  }
 }
+
 
 
   function cancelEditWorkout() { setEditWoOpen(false); setEditWoId(null); }
   async function removeWorkout(id: string) {
-  if (!userId || !dayId) return;
-
-  // ⬅️ NEW: find kcal of the row being removed to compute delta
-  const row = workouts.find(w => w.id === id);
-  const kcal = row ? Math.max(0, Number(row.calories || 0)) : 0;
-
-  // ⬅️ NEW: optimistic decrease
-  if (kcal) applyOptimisticWorkoutDelta(-kcal);
-
-  await deleteWorkoutEntry({ id, userId, dayId });
-  await loadWorkouts(userId, dayKey);
-
-  const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-  if (d) {
-    setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
-    try { eventBus.emit('day:totals', { dayId, totals: (d as any).totals }); } catch {}
+    if (!userId || !dayId) return;
+    await deleteWorkoutEntry({ id, userId, dayId });
+    await loadWorkouts(userId, dayKey);
+    const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
+    if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
   }
-}
-
 
   async function suggestSwap() {
     try {
@@ -1122,28 +1244,17 @@ async function saveEditWorkout() {
       setWoSuggestions(scored);
     } finally { setBusy(false); }
   }
- 
   async function addSuggestedWorkout(title: string, kcal: number) {
-  if (!userId || !dayId) return;
-  setBusy(true);
-  try {
-    const k = Math.max(0, Math.round(kcal || 0));
-
-    // ⬅️ NEW: optimistic bump
-    applyOptimisticWorkoutDelta(k);
-
-    await upsertWorkoutEntry({ userId, dayId, kind: title, calories: k, meta: { source: 'ai_suggestion' } });
-    await loadWorkouts(userId, dayKey);
-
-    const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-    if (d) {
-      setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
-      try { eventBus.emit('day:totals', { dayId, totals: (d as any).totals }); } catch {}
-    }
-    showToast(`Added: ${title} (+${k} kcal)`); setSuggestOpen(false);
-  } finally { setBusy(false); }
-}
-
+    if (!userId || !dayId) return;
+    setBusy(true);
+    try {
+      await upsertWorkoutEntry({ userId, dayId, kind: title, calories: Math.max(0, Math.round(kcal || 0)), meta: { source: 'ai_suggestion' } });
+      await loadWorkouts(userId, dayKey);
+      const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
+      if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+      showToast(`Added: ${title} (+${kcal} kcal)`); setSuggestOpen(false);
+    } finally { setBusy(false); }
+  }
 
   async function coachMealRow(m: MealRow) {
     try {
@@ -1349,55 +1460,8 @@ async function saveEditWorkout() {
           </table>
         </div>
 
-        {/* 🟣 Add Workout section (button relocated here) */}
-        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 space-y-3 bg-white dark:bg-neutral-900 mt-4">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold">Add workout</div>
-            <div className="flex items-center gap-2">
-              {currentPlan?.plan ? (
-                <button className="text-xs rounded-lg border border-neutral-200 dark:border-neutral-800 px-2 py-1" onClick={() => setViewPlanOpen(true)}>
-                  View plan
-                </button>
-              ) : null}
-              <button
-                className="text-xs rounded-lg border border-neutral-200 dark:border-neutral-800 px-2 py-1"
-                onClick={() => (onOpenPlanner ? onOpenPlanner() : setPlanOpen(true))}
-
-                title="Have the AI plan your week"
-              >
-                Plan my week
-              </button>
-            </div>
-          </div>
-
-          <input
-            className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
-            value={workoutText}
-            onChange={(e) => setWorkoutText(e.target.value)}
-            placeholder="e.g., 30 min interval run (hard/easy) or 5x5 squats 185lb + 3x12 bench 135lb"
-          />
-
-          {previewWorkoutKcal > 0 && (
-            <div className="text-xs text-neutral-600 dark:text-neutral-300">
-              Estimated burn preview: +{previewWorkoutKcal} kcal
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <button onClick={addWorkout} disabled={busy || !workoutText.trim()} className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-60">
-              Add workout (AI calories)
-            </button>
-            {currentPlan?.plan ? (
-              <button
-                onClick={() => setViewPlanOpen(true)}
-                className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
-                title="Pick one of your planned workouts to add (Step 3 will wire this insertion)"
-              >
-                Add from plan (Step 3)
-              </button>
-            ) : null}
-          </div>
-        </div>
+        {/* 🟣 Add Workout section (removed per request; using Weekly Plan page instead) */}
+        {/* (UI intentionally removed) */}
 
         {/* Workouts table */}
         <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 overflow-x-auto bg-white dark:bg-neutral-900 mt-4">

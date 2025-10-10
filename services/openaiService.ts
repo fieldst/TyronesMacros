@@ -1,5 +1,5 @@
 // services/openaiService.ts
-import type { MacroSet, Profile, Goal } from '../types';
+import type { MacroSet, Profile, Goal } from '../types'
 
 /** ──────────────────────────────────────────────────────────────────────────
  *  Model selection (env-driven) with smart auto-upgrade
@@ -9,23 +9,23 @@ import type { MacroSet, Profile, Goal } from '../types';
  *  - Heavy calls start on HEAVY immediately
  *  ------------------------------------------------------------------------- */
 const DEFAULT_MODEL =
-  (import.meta as any).env?.VITE_OPENAI_MODEL || 'gpt-4o-mini';
+  (import.meta as any).env?.VITE_OPENAI_MODEL || 'gpt-4o-mini'
 const HEAVY_MODEL =
-  (import.meta as any).env?.VITE_OPENAI_MODEL_HEAVY || 'gpt-4o';
+  (import.meta as any).env?.VITE_OPENAI_MODEL_HEAVY || 'gpt-4o'
 
 export type TargetOption = {
-  label: string;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-};
+  label: string
+  calories: number
+  protein: number
+  carbs: number
+  fat: number
+}
 
 type Purpose =
   | 'weekly-plan'
   | 'long-explanation'
   | 'rationale'
-  | 'light'; // small estimates, swaps, short tips, greetings
+  | 'light' // small estimates, swaps, short tips, greetings
 
 function chooseModel(purpose: Purpose, attempt: number): string {
   // Heavy purposes begin on the heavy model
@@ -34,16 +34,16 @@ function chooseModel(purpose: Purpose, attempt: number): string {
     purpose === 'long-explanation' ||
     purpose === 'rationale'
   ) {
-    return HEAVY_MODEL;
+    return HEAVY_MODEL
   }
   // Light work = start on DEFAULT, retry (if needed) on HEAVY
-  return attempt === 0 ? DEFAULT_MODEL : HEAVY_MODEL;
+  return attempt === 0 ? DEFAULT_MODEL : HEAVY_MODEL
 }
 
 function isUpgradeWorthyError(err: unknown): boolean {
-  const msg = String((err as any)?.message || '').toLowerCase();
-  const name = String((err as any)?.name || '').toLowerCase();
-  const code = String((err as any)?.code || '').toLowerCase();
+  const msg = String((err as any)?.message || '').toLowerCase()
+  const name = String((err as any)?.name || '').toLowerCase()
+  const code = String((err as any)?.code || '').toLowerCase()
   return (
     msg.includes('timeout') ||
     msg.includes('overloaded') ||
@@ -53,28 +53,39 @@ function isUpgradeWorthyError(err: unknown): boolean {
     msg.includes('maximum context') ||
     name.includes('timeout') ||
     code === 'etimedout'
-  );
+  )
 }
 
 /** Back-compat: allow local toggle (kept but not required) */
 function getSelectedModelFallback(): string {
   try {
-    if (typeof window === 'undefined') return DEFAULT_MODEL;
-    const m = localStorage.getItem('selectedModel');
-    return m || DEFAULT_MODEL;
+    if (typeof window === 'undefined') return DEFAULT_MODEL
+    const m = localStorage.getItem('selectedModel')
+    return m || DEFAULT_MODEL
   } catch {
-    return DEFAULT_MODEL;
+    return DEFAULT_MODEL
   }
 }
 
 function extractFirstJson(text: string): any {
-  const fenced = text.match(/```json([\s\S]*?)```/i) || text.match(/```([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : text;
-  try { return JSON.parse(candidate); } catch {}
-  const braceMatch = candidate.match(/[\[{][\s\S]*[\]}]/);
-  if (braceMatch) { try { return JSON.parse(braceMatch[0]); } catch {} }
-  try { return JSON.parse(candidate.replace(/^[^{\[]*/, '').replace(/[^}\]]*$/, '')); } catch {}
-  throw new Error('Unable to parse JSON from model response');
+  const fenced =
+    text.match(/```json([\s\S]*?)```/i) || text.match(/```([\s\S]*?)```/i)
+  const candidate = fenced ? fenced[1] : text
+  try {
+    return JSON.parse(candidate)
+  } catch {}
+  const braceMatch = candidate.match(/[\[{][\s\S]*[\]}]/)
+  if (braceMatch) {
+    try {
+      return JSON.parse(braceMatch[0])
+    } catch {}
+  }
+  try {
+    return JSON.parse(
+      candidate.replace(/^[^{\[]*/, '').replace(/[^}\]]*$/, ''),
+    )
+  } catch {}
+  throw new Error('Unable to parse JSON from model response')
 }
 
 /* ---------------- low-level helpers ---------------- */
@@ -84,11 +95,15 @@ async function fetchJSON(url: string, body: any) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
-  const raw = await res.text();
-  let payload: any = null;
-  try { payload = JSON.parse(raw); } catch { payload = { text: raw }; }
-  return { ok: res.ok, status: res.status, payload, raw };
+  })
+  const raw = await res.text()
+  let payload: any = null
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    payload = { text: raw }
+  }
+  return { ok: res.ok, status: res.status, payload, raw }
 }
 
 /**
@@ -98,27 +113,27 @@ async function fetchJSON(url: string, body: any) {
  */
 async function callServerSmart(
   body: {
-    prompt: string;
-    system?: string;
-    expectJson?: boolean;
-    jsonSchema?: any;
-    temperature?: number;
-    max_tokens?: number;
+    prompt: string
+    system?: string
+    expectJson?: boolean
+    jsonSchema?: any
+    temperature?: number
+    max_tokens?: number
   },
-  purpose: Purpose = 'light'
+  purpose: Purpose = 'light',
 ): Promise<string> {
-  const url = '/api/generate'; // dev: Vite proxy; prod: Vercel function
+  const url = '/api/generate' // dev: Vite proxy; prod: Vercel function
 
   // attempt 0 (default) → maybe attempt 1 (upgrade)
   for (let attempt = 0; attempt < 2; attempt++) {
     const chosen =
-      attempt === 0 ? chooseModel(purpose, 0) : chooseModel(purpose, 1);
+      attempt === 0 ? chooseModel(purpose, 0) : chooseModel(purpose, 1)
 
     // keep legacy localStorage override as a fallback only (doesn't break existing behavior)
-    const selected = getSelectedModelFallback() || chosen;
+    const selected = getSelectedModelFallback() || chosen
 
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 25_000);
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), 25_000)
 
     try {
       const res = await fetch(url, {
@@ -127,45 +142,58 @@ async function callServerSmart(
         // your server expects { model, ...body }
         body: JSON.stringify({ model: selected, ...body }),
         signal: ac.signal,
-      });
+      })
 
       // best-effort rate banner
       try {
-        const limit = Number(res.headers.get('X-RateLimit-Limit') || 0);
-        const remaining = Number(res.headers.get('X-RateLimit-Remaining') || 0);
-        const reset = Number(res.headers.get('X-RateLimit-Reset') || 0);
+        const limit = Number(res.headers.get('X-RateLimit-Limit') || 0)
+        const remaining = Number(res.headers.get('X-RateLimit-Remaining') || 0)
+        const reset = Number(res.headers.get('X-RateLimit-Reset') || 0)
         if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('rate-update', { detail: { limit, remaining, reset } }));
+          window.dispatchEvent(
+            new CustomEvent('rate-update', {
+              detail: { limit, remaining, reset },
+            }),
+          )
         }
       } catch {}
 
-      const raw = await res.text();
-      let payload: any = null;
-      try { payload = JSON.parse(raw); } catch { payload = { text: raw }; }
-
-      if (!res.ok || payload?.success === false) {
-        const msg = payload?.error || payload?.message || raw || `HTTP ${res.status}`;
-        // If first attempt and error looks upgrade-worthy, retry once on HEAVY
-        if (attempt === 0 && isUpgradeWorthyError({ message: msg })) {
-          continue;
-        }
-        console.error('API /api/generate error:', { status: res.status, msg, payload });
-        throw new Error(msg);
+      const raw = await res.text()
+      let payload: any = null
+      try {
+        payload = JSON.parse(raw)
+      } catch {
+        payload = { text: raw }
       }
 
-      return payload?.data?.text ?? '';
+      if (!res.ok || payload?.success === false) {
+        const msg =
+          payload?.error || payload?.message || raw || `HTTP ${res.status}`
+        // If first attempt and error looks upgrade-worthy, retry once on HEAVY
+        if (attempt === 0 && isUpgradeWorthyError({ message: msg })) {
+          continue
+        }
+        console.error('API /api/generate error:', {
+          status: res.status,
+          msg,
+          payload,
+        })
+        throw new Error(msg)
+      }
+
+      return payload?.data?.text ?? ''
     } catch (err) {
       if (attempt === 0 && isUpgradeWorthyError(err)) {
         // try once more on HEAVY
-        continue;
+        continue
       }
-      throw err;
+      throw err
     } finally {
-      clearTimeout(timer);
+      clearTimeout(timer)
     }
   }
 
-  throw new Error('callServerSmart failed unexpectedly.');
+  throw new Error('callServerSmart failed unexpectedly.')
 }
 
 /* ================= Features ================= */
@@ -177,122 +205,248 @@ async function callServerSmart(
  */
 export async function estimateMacrosForMeal(
   mealText: string,
-  _profile: Profile
+  _profile: Profile,
 ): Promise<{ macros: MacroSet; note: string }> {
-
   // 1) Primary: /api/estimate
   try {
-    const { ok, status, payload, raw } = await fetchJSON('/api/estimate', { description: mealText });
+    const { ok, status, payload, raw } = await fetchJSON('/api/estimate', {
+      description: mealText,
+    })
     if (ok && payload?.success !== false) {
-      const t = payload?.data?.totals ?? payload?.totals;
+      const t = payload?.data?.totals ?? payload?.totals
       if (t && Number.isFinite(+t.calories)) {
         const macros: MacroSet = {
           calories: Math.max(0, Math.round(+t.calories || 0)),
           protein: Math.max(0, Math.round(+t.protein || 0)),
-          carbs:   Math.max(0, Math.round(+t.carbs   || 0)),
-          fat:     Math.max(0, Math.round(+t.fat     || 0)),
-        };
-        return { macros, note: 'AI estimate' };
+          carbs: Math.max(0, Math.round(+t.carbs || 0)),
+          fat: Math.max(0, Math.round(+t.fat || 0)),
+        }
+        return { macros, note: 'AI estimate' }
       }
       // wrong shape -> fall through to fallback
-      console.warn('API /api/estimate returned unexpected shape; falling back.', { payload });
+      console.warn('API /api/estimate returned unexpected shape; falling back.', {
+        payload,
+      })
     } else if (status !== 404) {
       // non-404 error -> log, then fallback
-      const msg = payload?.error || payload?.message || raw || `HTTP ${status}`;
-      console.warn('API /api/estimate error (will fallback):', { status, msg });
+      const msg = payload?.error || payload?.message || raw || `HTTP ${status}`
+      console.warn('API /api/estimate error (will fallback):', {
+        status,
+        msg,
+      })
     }
   } catch (e) {
     // network/parse error -> fallback
-    console.warn('API /api/estimate threw (will fallback):', e);
+    console.warn('API /api/estimate threw (will fallback):', e)
   }
 
   // 2) Fallback: /api/estimate-macros (present on Vercel)
   {
-    const { ok, status, payload, raw } = await fetchJSON('/api/estimate-macros', { text: mealText });
+    const { ok, status, payload, raw } = await fetchJSON(
+      '/api/estimate-macros',
+      { text: mealText },
+    )
     if (!ok || payload?.success === false) {
-      const msg = payload?.error || payload?.message || raw || `HTTP ${status}`;
-      console.error('API /api/estimate-macros error:', { status, msg, payload });
-      throw new Error(msg);
+      const msg = payload?.error || payload?.message || raw || `HTTP ${status}`
+      console.error('API /api/estimate-macros error:', { status, msg, payload })
+      throw new Error(msg)
     }
 
     const t =
       payload?.data?.totals ??
       payload?.totals ??
       (payload?.data && 'calories' in payload?.data ? payload?.data : null) ??
-      null;
+      null
 
-    const totals = t ?? { calories: 0, protein: 0, carbs: 0, fat: 0 };
+    const totals = t ?? { calories: 0, protein: 0, carbs: 0, fat: 0 }
     const macros: MacroSet = {
       calories: Math.max(0, Math.round(+totals.calories || 0)),
       protein: Math.max(0, Math.round(+totals.protein || 0)),
-      carbs:   Math.max(0, Math.round(+totals.carbs   || 0)),
-      fat:     Math.max(0, Math.round(+totals.fat     || 0)),
-    };
-    return { macros, note: 'AI estimate' };
+      carbs: Math.max(0, Math.round(+totals.carbs || 0)),
+      fat: Math.max(0, Math.round(+totals.fat || 0)),
+    }
+    return { macros, note: 'AI estimate' }
   }
 }
 
-/** Workout energy estimate via /api/generate (JSON schema) */
+/** ──────────────────────────────────────────────────────────────────────────
+ * Workout parsing → deterministic calorie estimation
+ *  - The model ONLY parses to JSON (no calories).
+ *  - All calorie math is done locally with MET tables and guardrails.
+ *  ------------------------------------------------------------------------- */
+
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// Workout parse → deterministic MET calories (append-only; no removals)
+// ────────────────────────────────────────────────────────────────────────────
+export type ParsedWorkoutItem = {
+  kind: string;                 // run|walk|bike|row|elliptical|swim|strength|crossfit|circuit|hiit|yoga|mobility|other
+  label?: string;
+  duration_min?: number;
+  distance_mi?: number;
+  avg_pace_min_per_mi?: number | null;
+  intensity?: string | null;
+  sets?: number | null;
+  reps?: number | null;
+  weight_lb?: number | number[] | null;
+  movements?: string[] | null;
+  machine_kcal?: number | null; // e.g., "10 cals on assault bike"
+};
+export type ParsedWorkout = { items: ParsedWorkoutItem[]; notes?: string | null };
+
+function pickMET(kind: string, intensity?: string | null, pace?: number | null, speedMph?: number | null): number {
+  const k = (kind || '').toLowerCase();
+  const i = (intensity || 'unspecified').toLowerCase();
+  if (k === 'run' || k === 'jog') {
+    if (pace && pace > 0) { if (pace <= 8) return 11.5; if (pace <= 10) return 9.8; return 8.3; }
+    if (i === 'hard' || i === 'max') return 11.0;
+    if (i === 'moderate') return 9.0;
+    return 8.3;
+  }
+  if (k === 'walk') return 3.3;
+  if (k === 'bike' || k === 'cycle' || k === 'spin') {
+    if (speedMph && speedMph >= 16) return 12.0;
+    if (speedMph && speedMph >= 12) return 8.0;
+    if (i === 'hard' || i === 'max') return 10.0;
+    return 7.0;
+  }
+  if (k === 'row') return i === 'hard' || i === 'max' ? 8.0 : 7.0;
+  if (k === 'swim') return i === 'hard' || i === 'max' ? 9.5 : 8.0;
+  if (k === 'hiit' || k === 'crossfit') return i === 'hard' || i === 'max' ? 12.0 : 10.0;
+  if (k === 'circuit') return 8.0;
+  if (k === 'strength' || k === 'lift' || k === 'weights') {
+    if (i === 'hard' || i === 'max') return 6.0;
+    if (i === 'moderate') return 5.0;
+    return 3.5;
+  }
+  if (k === 'yoga' || k === 'mobility') return 2.5;
+  return 5.0;
+}
+
+function inferStrengthMinutes(item: ParsedWorkoutItem): number {
+  if (item.duration_min && item.duration_min > 0) return item.duration_min;
+  const sets = item.sets ?? 0;
+  const reps = item.reps ?? 0;
+  const base = sets > 0 ? sets * 2.5 : 10;     // rough work+rest per set
+  const repAdj = reps >= 9 ? 5 : (reps > 0 ? 3 : 0);
+  const mult = Math.max(1, (item.movements?.length ?? 1));
+  return Math.max(10, Math.round((base + repAdj) * mult));
+}
+
+async function parseWorkoutText(text: string): Promise<ParsedWorkout> {
+  const schema = {
+    name: 'workout_parse',
+    strict: true,
+    schema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string' },
+              label: { type: 'string' },
+              duration_min: { type: 'number' },
+              distance_mi: { type: 'number' },
+              avg_pace_min_per_mi: { type: 'number' },
+              intensity: { type: 'string' },
+              sets: { type: 'number' },
+              reps: { type: 'number' },
+              weight_lb: {},
+              movements: { type: 'array', items: { type: 'string' } },
+              machine_kcal: { type: 'number' }
+            },
+            required: ['kind'],
+            additionalProperties: false
+          }
+        },
+        notes: { type: 'string' }
+      },
+      required: ['items'],
+      additionalProperties: false
+    }
+  };
+  const system = 'Extract workout details as strict JSON matching the schema. Do NOT compute calories.';
+  const prompt = `Workout text: ${text}\nReturn JSON only.`;
+  const raw = await callServerSmart({ prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.1 }, 'light');
+  try {
+    const obj = extractFirstJson(raw);
+    if (!obj || !Array.isArray(obj.items)) throw new Error('bad parse');
+    return obj as ParsedWorkout;
+  } catch {
+    return { items: [{ kind: 'other', label: text, duration_min: 30, intensity: 'moderate' }] };
+  }
+}
+
+function kcalForItem(item: ParsedWorkoutItem, profile: Profile): number {
+  if (item.machine_kcal && item.machine_kcal > 0) return Math.round(item.machine_kcal);
+  const kg = (profile?.weight_lbs ?? 180) * 0.45359237;
+  const kind = (item.kind || '').toLowerCase();
+  let minutes = item.duration_min ?? 0;
+
+  if ((!minutes || minutes <= 0) && item.distance_mi && item.distance_mi > 0) {
+    if (kind === 'run' || kind === 'jog') {
+      const pace = item.avg_pace_min_per_mi && item.avg_pace_min_per_mi > 0 ? item.avg_pace_min_per_mi : 10;
+      minutes = Math.round(pace * item.distance_mi);
+    } else if (kind === 'walk') {
+      minutes = Math.round(20 * item.distance_mi);
+    } else if (kind === 'bike' || kind === 'cycle') {
+      const mph = 13; // moderate
+      minutes = Math.round(60 * (item.distance_mi / mph));
+    } else if (kind === 'row') {
+      const minPerKm = 4.4; // rough
+      minutes = Math.round(minPerKm * (item.distance_mi * 1.609));
+    }
+  }
+
+  if ((!minutes || minutes <= 0) && (kind === 'strength' || kind === 'lift' || kind === 'weights')) {
+    minutes = inferStrengthMinutes(item);
+  }
+  if (!minutes || minutes <= 0) minutes = 20;
+
+  const met = pickMET(kind, item.intensity ?? undefined, item.avg_pace_min_per_mi ?? undefined, undefined);
+  let kcal = met * kg * (minutes / 60);
+
+  const perMin = kcal / minutes;
+  if (perMin > 20) kcal = 20 * minutes;
+  if (kcal < 10) kcal = 10;
+  if (kcal > 1200) kcal = 1200;
+
+  return Math.round(kcal);
+}
+
+function estimateCaloriesFromParsed(parsed: ParsedWorkout, profile: Profile): number {
+  return parsed.items.reduce((sum, it) => sum + kcalForItem(it, profile), 0);
+}
+
+/** Public API (kept small): used by TodayView preview/add */
 export async function getWorkoutCalories(
   workout: string,
   profile: Profile
 ): Promise<{ total_calories: number }> {
-  const schema = {
-    name: 'workout_energy',
-    schema: {
-      type: 'object',
-      properties: {
-        total_calories: { type: 'number' },
-        assumptions: { type: 'string' }
-      },
-      required: ['total_calories'],
-      additionalProperties: false
-    },
-    strict: true
-  };
-
-  const system =
-    'You are a fitness assistant. Use MET-based logic by activity type and intensity. ' +
-    'Factor in user sex, age, height, weight when available. Return valid JSON only.';
-
-  const profileLine = `sex=${profile.sex ?? 'unknown'}, age=${profile.age ?? 'unknown'}, ` +
-                      `height_in=${profile.height_in ?? 'unknown'}, weight_lbs=${profile.weight_lbs ?? 'unknown'}, ` +
-                      `activity_level=${profile.activity_level ?? 'unknown'}`;
-
-  const prompt =
-    `Estimate total calories burned for this workout entry, including reasonable assumptions for pace/intensity:\n` +
-    `Workout: ${workout}\n` +
-    `User profile: ${profileLine}\n` +
-    `Return JSON matching the schema.`;
-
-  const text = await callServerSmart(
-    { prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 },
-    'light'
-  );
-
-  try {
-    const obj = extractFirstJson(text);
-    return { total_calories: Math.max(0, Math.round(+obj.total_calories || 0)) };
-  } catch {
-    return { total_calories: 0 };
-  }
+  const parsed = await parseWorkoutText(workout);
+  const total = estimateCaloriesFromParsed(parsed, profile);
+  return { total_calories: Math.max(0, Math.round(total)) };
 }
+
 
 /** Quick swap / tip text */
 export async function getSwapSuggestion(remaining: MacroSet): Promise<string> {
-  const system = 'You are a concise nutrition coach. Keep answers short and practical.';
+  const system = 'You are a concise nutrition coach. Keep answers short and practical.'
   const prompt =
     `Given these remaining macros for the day, suggest ONE quick food swap or snack idea:\n` +
     `Remaining: calories=${remaining.calories}, protein=${remaining.protein}g, carbs=${remaining.carbs}g, fat=${remaining.fat}g.\n` +
-    `Prefer budget-friendly, widely available foods. Limit to 1–2 short sentences.`;
+    `Prefer budget-friendly, widely available foods. Limit to 1–2 short sentences.`
 
-  return await callServerSmart({ prompt, system, temperature: 0.2 }, 'light');
+  return await callServerSmart({ prompt, system, temperature: 0.2 }, 'light')
 }
 
 /** Target option presets (JSON) – this is a heavier reasoning task */
 export async function getTargetOptions(
   profile: Profile,
-  goal: Goal
+  goal: Goal,
 ): Promise<{ options: TargetOption[]; notes: string }> {
   const schema = {
     name: 'target_options',
@@ -309,78 +463,85 @@ export async function getTargetOptions(
               calories: { type: 'number' },
               protein: { type: 'number' },
               carbs: { type: 'number' },
-              fat: { type: 'number' }
+              fat: { type: 'number' },
             },
-            required: ['label','calories','protein','carbs','fat'],
-            additionalProperties: false
-          }
-        }
+            required: ['label', 'calories', 'protein', 'carbs', 'fat'],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ['options','notes'],
-      additionalProperties: false
+      required: ['options', 'notes'],
+      additionalProperties: false,
     },
-    strict: true
-  };
+    strict: true,
+  }
 
   const system =
     'You are a nutrition assistant. Compute BMR via Mifflin–St Jeor and TDEE via activity factor. ' +
     'Set calorie targets based on goal (maintain≈TDEE, cut≈-15%, recomp≈-5%, gain≈+10%). ' +
-    'Protein 0.7–1.0 g/lb (choose the middle). Fat 20–30% kcal; rest carbs. Return JSON per schema.';
+    'Protein 0.7–1.0 g/lb (choose the middle). Fat 20–30% kcal; rest carbs. Return JSON per schema.'
 
-  const profileLine = `sex=${profile.sex ?? 'unknown'}, age=${profile.age ?? 'unknown'}, ` +
-                      `height_in=${profile.height_in ?? 'unknown'}, weight_lbs=${profile.weight_lbs ?? 'unknown'}, ` +
-                      `activity_level=${profile.activity_level ?? 'unknown'}`;
+  const profileLine =
+    `sex=${profile.sex ?? 'unknown'}, age=${profile.age ?? 'unknown'}, ` +
+    `height_in=${profile.height_in ?? 'unknown'}, weight_lbs=${profile.weight_lbs ?? 'unknown'}, ` +
+    `activity_level=${profile.activity_level ?? 'unknown'}`
 
   const prompt =
     `Create 3–5 target options for this user and goal.\n` +
     `User: ${profileLine}\nGoal: ${goal}\n` +
-    `Explain assumptions briefly in "notes". Return JSON matching the schema.`;
+    `Explain assumptions briefly in "notes". Return JSON matching the schema.`
 
   const text = await callServerSmart(
     { prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 },
-    'rationale'
-  );
+    'rationale',
+  )
 
   try {
-    const parsed = extractFirstJson(text);
-    if (!Array.isArray(parsed?.options)) throw new Error('Bad shape');
-    return parsed as { options: TargetOption[]; notes: string };
+    const parsed = extractFirstJson(text)
+    if (!Array.isArray(parsed?.options)) throw new Error('Bad shape')
+    return parsed as { options: TargetOption[]; notes: string }
   } catch {
-    return { notes: 'AI options unavailable', options: [] };
+    return { notes: 'AI options unavailable', options: [] }
   }
 }
 
 /* ====== coaching ====== */
 
 function normalizeAlternatives(input: any): { item: string; why: string }[] {
-  if (!Array.isArray(input)) return [];
-  const out: { item: string; why: string }[] = [];
+  if (!Array.isArray(input)) return []
+  const out: { item: string; why: string }[] = []
   for (const it of input) {
     if (it && typeof it === 'object') {
-      const item = typeof it.item === 'string' ? it.item.trim() : '';
-      const why = typeof it.why === 'string' ? it.why.trim() : '';
-      if (item && why) { out.push({ item, why }); continue; }
+      const item = typeof it.item === 'string' ? it.item.trim() : ''
+      const why = typeof it.why === 'string' ? it.why.trim() : ''
+      if (item && why) {
+        out.push({ item, why })
+        continue
+      }
     }
     if (typeof it === 'string') {
-      const parts = it.split(/—|-|:/);
+      const parts = it.split(/—|-|:/)
       if (parts.length >= 2) {
-        const item = parts[0].trim();
-        const why = parts.slice(1).join(':').trim();
-        if (item && why) out.push({ item, why });
+        const item = parts[0].trim()
+        const why = parts.slice(1).join(':').trim()
+        if (item && why) out.push({ item, why })
       }
     }
   }
-  return out;
+  return out
 }
 
 export async function getMealCoaching(
   mealText: string,
   profile: Profile,
   remainingBefore: MacroSet,
-  targets: MacroSet
-): Promise<{ suggestions: string[]; better_alternatives: { item: string; why: string }[] }> {
+  targets: MacroSet,
+): Promise<{
+  suggestions: string[]
+  better_alternatives: { item: string; why: string }[]
+}> {
   const system =
-    'You are a concise nutrition coach. Offer practical, budget-conscious tips rooted in basic nutrition. Keep answers specific and short.';
+    'You are a concise nutrition coach. Offer practical, budget-conscious tips rooted in basic nutrition. Keep answers specific and short.'
 
   const schema = {
     name: 'meal_coaching',
@@ -391,7 +552,7 @@ export async function getMealCoaching(
           type: 'array',
           minItems: 2,
           maxItems: 4,
-          items: { type: 'string' }
+          items: { type: 'string' },
         },
         better_alternatives: {
           type: 'array',
@@ -401,49 +562,52 @@ export async function getMealCoaching(
             type: 'object',
             properties: {
               item: { type: 'string' },
-              why: { type: 'string' }
+              why: { type: 'string' },
             },
-            required: ['item','why'],
-            additionalProperties: false
-          }
-        }
+            required: ['item', 'why'],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ['suggestions','better_alternatives'],
-      additionalProperties: false
+      required: ['suggestions', 'better_alternatives'],
+      additionalProperties: false,
     },
-    strict: true
-  } as const;
+    strict: true,
+  } as const
 
-  const profileLine = `sex=${profile.sex ?? 'unknown'}, age=${profile.age ?? 'unknown'}, ` +
-                      `height_in=${profile.height_in ?? 'unknown'}, weight_lbs=${profile.weight_lbs ?? 'unknown'}, ` +
-                      `activity_level=${profile.activity_level ?? 'unknown'}`;
+  const profileLine =
+    `sex=${profile.sex ?? 'unknown'}, age=${profile.age ?? 'unknown'}, ` +
+    `height_in=${profile.height_in ?? 'unknown'}, weight_lbs=${profile.weight_lbs ?? 'unknown'}, ` +
+    `activity_level=${profile.activity_level ?? 'unknown'}`
 
   const prompt =
     `Meal: ${mealText}\n` +
     `User profile: ${profileLine}\n` +
     `Current targets (kcal/protein/carbs/fat): ${targets.calories}/${targets.protein}/${targets.carbs}/${targets.fat}\n` +
     `Remaining before this meal: kcal=${remainingBefore.calories}, P=${remainingBefore.protein}, C=${remainingBefore.carbs}, F=${remainingBefore.fat}\n` +
-    `Give 2–4 short suggestions and 1–2 "better_alternatives". Return JSON per schema.`;
+    `Give 2–4 short suggestions and 1–2 "better_alternatives". Return JSON per schema.`
 
   const text = await callServerSmart(
     { prompt, system, expectJson: true, jsonSchema: schema, temperature: 0.2 },
-    'light'
-  );
+    'light',
+  )
 
   try {
-    const parsed = extractFirstJson(text);
+    const parsed = extractFirstJson(text)
     const suggestions = Array.isArray(parsed?.suggestions)
-      ? parsed.suggestions.filter((s: any) => typeof s === 'string' && s.trim()).map((s: string) => s.trim())
-      : [];
+      ? parsed.suggestions
+          .filter((s: any) => typeof s === 'string' && s.trim())
+          .map((s: string) => s.trim())
+      : []
 
-    let alts = normalizeAlternatives(parsed?.better_alternatives);
+    let alts = normalizeAlternatives(parsed?.better_alternatives)
     if (alts.length === 0 && Array.isArray(parsed?.alternatives)) {
-      alts = normalizeAlternatives(parsed.alternatives);
+      alts = normalizeAlternatives(parsed.alternatives)
     }
 
-    return { suggestions, better_alternatives: alts };
+    return { suggestions, better_alternatives: alts }
   } catch (e: any) {
-    throw new Error(e?.message || 'Could not parse AI coaching JSON.');
+    throw new Error(e?.message || 'Could not parse AI coaching JSON.')
   }
 }
 
@@ -451,40 +615,49 @@ export async function getMealCoaching(
 export async function getDailyGreeting(
   name: string,
   dateKey: string,
-  hour: number
+  hour: number,
 ): Promise<string> {
   const system =
     'You are a concise, uplifting fitness & nutrition coach. ' +
     'Write ONE short motivational phrase that feels unique for this day. ' +
-    'Consider time of day. 6–16 words. No emojis, no hashtags, no quotes.';
+    'Consider time of day. 6–16 words. No emojis, no hashtags, no quotes.'
 
   const prompt =
     `User: ${name || 'friend'}\n` +
     `Date: ${dateKey}\n` +
     `Hour: ${hour}\n` +
-    `Write the line now.`;
+    `Write the line now.`
 
-  const line = await callServerSmart({ prompt, system, temperature: 0.7 }, 'light');
-  return (line || '').toString();
+  const line = await callServerSmart({ prompt, system, temperature: 0.7 }, 'light')
+  return (line || '').toString()
 }
 
 /* --- plan week (server route) --- */
 export type PlanWeekOptions = {
-  goal: 'cut'|'lean'|'maintain'|'bulk';
-  style: 'HIIT'|'cardio'|'strength+cardio'|'CrossFit';
-  availableDays: ('Mon'|'Tue'|'Wed'|'Thu'|'Fri'|'Sat'|'Sun')[];
-  minutesPerSession: number;
-  equipment: string[];
-  experience: 'beginner'|'intermediate'|'advanced';
-  startDate?: string;
-};
+  goal: 'cut' | 'lean' | 'maintain' | 'bulk'
+  style: 'HIIT' | 'cardio' | 'strength+cardio' | 'CrossFit'
+  availableDays: ('Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun')[]
+  minutesPerSession: number
+  equipment: string[]
+  experience: 'beginner' | 'intermediate' | 'advanced'
+  startDate?: string
+}
 
 export async function planWeek(opts: PlanWeekOptions) {
   const resp = await fetch('/api/plan-week', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(opts)
-  });
-  if(!resp.ok) throw new Error('Failed to plan week');
-  return await resp.json();
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  })
+  if (!resp.ok) throw new Error('Failed to plan week')
+  return await resp.json()
 }
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// Workout parse → deterministic MET calories (append-only; no removals)
+// ────────────────────────────────────────────────────────────────────────────
+
+
+
+

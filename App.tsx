@@ -11,13 +11,29 @@ import ThemeToggle from './components/ThemeToggle'
 import { getDisplayName, onAuthChange, signOut } from './auth'
 import { getDailyTargets, todayDateString } from './db'
 import { eventBus } from './lib/eventBus'
+import AuthModal from './components/AuthModal'
 import './lib/legacyGlue'
+import Modal from './components/Modal'
+
 
 type Tab = 'today' | 'history' | 'targets' | 'plan'
 type MacroSet = { calories: number; protein: number; carbs: number; fat: number }
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('today')
+
+// Auth UI
+const [authOpen, setAuthOpen] = useState(false)
+const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up'>('sign-in')
+
+const openSignIn = () => {
+  setAuthMode('sign-in'); setAuthOpen(true);
+  try { eventBus.emit('auth:open', { mode: 'sign-in' }); } catch {}
+}
+const openSignUp = () => {
+  setAuthMode('sign-up'); setAuthOpen(true);
+  try { eventBus.emit('auth:open', { mode: 'sign-up' }); } catch {}
+}
 
   // Auth UI
   const [displayName, setDisplayName] = useState<string | null>(null)
@@ -40,9 +56,13 @@ export default function App() {
       if (mounted) setDisplayName(n)
     })
     const offAuth = onAuthChange(async () => {
-      const n = await getDisplayName()
-      if (mounted) setDisplayName(n)
-    })
+  const n = await getDisplayName()
+  if (mounted) {
+    setDisplayName(n)
+    if (n) setAuthOpen(false)   // ⬅ close modal on successful sign-in/up
+  }
+})
+
 
     // react to Targets tab saves/suggestions
     const offBus = eventBus.on<MacroSet>('targets:update', (payload) => {
@@ -128,13 +148,13 @@ export default function App() {
               </button>
             ) : (
               <div className="flex gap-2">
-                <button className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-gray-700 dark:text-gray-100">
-                  Sign in
-                </button>
-                <button className="px-3 py-1 rounded-xl bg-gray-900 text-white dark:bg-gray-200 dark:text-gray-900">
-                  Sign up
-                </button>
-              </div>
+  <button onClick={openSignIn} className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-gray-700 dark:text-gray-100">
+    Sign in
+  </button>
+  <button onClick={openSignUp} className="px-3 py-1 rounded-xl bg-gray-900 text-white dark:bg-gray-200 dark:text-gray-900">
+    Sign up
+  </button>
+</div>
             )}
           </div>
         </div>
@@ -171,6 +191,7 @@ export default function App() {
         role="tablist"
         aria-label="Primary"
       >
+
         <div className="mx-auto w-full max-w-[800px] grid grid-cols-4">
           <button
             onClick={() => setTab('today')}
@@ -220,7 +241,26 @@ export default function App() {
             <span>Weekly Plan</span>
           </button>
         </div>
+
       </nav>
-    </div>
+            {/* Auth modal */}
+    {/* Auth modal (tolerant to different prop APIs used in the zip) */}
+     
+{/* Auth modal */}
+<Modal
+  isOpen={authOpen}
+  onClose={() => setAuthOpen(false)}
+  title={authMode === 'sign-in' ? 'Sign in' : 'Create account'}
+  size="sm"
+>
+  <AuthModal
+    mode={authMode}
+    onSuccess={() => setAuthOpen(false)}
+  />
+</Modal>
+
+</div>
+
+
   )
 }
