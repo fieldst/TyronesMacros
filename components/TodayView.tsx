@@ -11,6 +11,7 @@ import { dateKeyChicago, msUntilNextChicagoMidnight, localDateKey } from '../lib
 import { supabase } from "../supabaseClient";
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Modal from './Modal';
+import { MealCard, WorkoutCard, SummaryTray } from './MobileUI';
 import { recalcAndPersistDay } from '../lib/recalcDay';
 import { getActiveTarget, inferGoalFromTargetText } from '../services/targetsService'
 import { mifflinStJeor, activityMultiplier, adjustForGoal, defaultMacros } from '../lib/nutrition'
@@ -314,7 +315,8 @@ export default function TodayView({
 }: {
  profile: Profile;
   targets: MacroSet;
-  onTotalsChange?: (totals: DayTotals) => void;
+  onTotalsChange?: (totals: any) => void;
+
   onOpenPlanner?: () => void; 
 }) {
   const [userId, setUserId] = useState<string | null>(null);
@@ -367,7 +369,14 @@ export default function TodayView({
   const [editWoKind, setEditWoKind] = useState<string>('');
   const [editWoKcal, setEditWoKcal] = useState<number>(0);
 
-  // Per-row suggestions modal
+  
+  function startEditWorkout(w: WorkoutRow) {
+    setEditWoId(w.id);
+    setEditWoKind(w.kind);
+    setEditWoKcal(Math.round(w.calories || 0));
+    setEditWoOpen(true);
+  }
+// Per-row suggestions modal
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [suggestForId, setSuggestForId] = useState<string | null>(null);
   const [suggestForTitle, setSuggestForTitle] = useState<string>('');
@@ -531,7 +540,10 @@ useEffect(() => {
       const tdee = Math.round(bmr * activityMultiplier(profile?.activity_level))
       const inferred = inferGoalFromTargetText(goalText)
 
-      const kcal = (active.kcal && active.kcal > 0) ? Math.round(active.kcal) : adjustForGoal(tdee, inferred)
+     const kcal = (active && typeof active.kcal === 'number' && active.kcal > 0)
+  ? Math.round(active.kcal)
+  : adjustForGoal(tdee, inferred)
+
       const macros = {
         kcal,
         protein_g: active.protein_g ?? defaultMacros(kcal, weightLbs, inferred).protein_g,
@@ -1320,7 +1332,7 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
         </div>
       )}
 
-      <div className="mx-auto w-full max-w-md md:max-w-2xl lg:max-w-3xl px-4 pb-10 pt-4">
+      <div className="mx-auto w-full max-w-screen-sm px-3 pb-24 pt-4">
         {/* Header + greeting */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex flex-col">
@@ -1338,20 +1350,12 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
         </div>
 
         {/* Summary */}
-        <div className="grid grid-cols-3 gap-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 mb-4">
-          <SummaryPill
-  label="Current target"
-  value={
-    currentGoal?.calories
-      ? `${currentGoal.calories} kcal`
-      : // fallback to whatever you computed from AI/macros if present
-        (macroTargets?.calories ? `${macroTargets.calories} kcal` : '—')
-  }
-/>
+      <div className="grid grid-cols-3 gap-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 mb-4">
+  <SummaryPill variant="target"   label="Current target"   value={`${currentGoal?.calories || macroTargets?.kcal || '—'} kcal`} />
+  <SummaryPill variant="exercise" label="Exercise added"   value={`${Math.round(day?.totals?.workoutCals ?? 0)} kcal`} />
+  <SummaryPill variant="allowance"label="Daily allowance"  value={`${Math.round(dailyAllowance)} kcal`} />
+</div>
 
-          <SummaryPill label="Exercise added" value={`${Math.round(day?.totals?.workoutCals ?? 0)} kcal`} />
-          <SummaryPill label="Daily allowance" value={`${Math.round(dailyAllowance)} kcal`} />
-        </div>
 
         {/* Macro meters */}
         {/* Macro meters */}
@@ -1365,22 +1369,37 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
 
         {/* Food input */}
         <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 space-y-3 bg-white dark:bg-neutral-900 mb-4">
-          <label className="text-sm font-medium">Log a meal
+          <label className="text-sm font-medium text-purple-600 dark:text-purple-400">Log a meal
             <span className="ml-1 text-[11px] text-neutral-500">— be as specific as possible (ingredients, amounts, cooking method)</span>
           </label>
           <textarea
-            className="w-full border border-neutral-200 dark:border-neutral-800 rounded-xl p-2 text-sm bg-white dark:bg-neutral-950"
-            rows={3}
-            placeholder="e.g., 1 bowl oatmeal (60g oats) with 200ml 2% milk + 1 banana; 2 eggs in 1 tsp olive oil"
-            value={mealText} onChange={(e) => setMealText(e.target.value)}
-          />
+  id="meal-input"
+  className="w-full border rounded-xl p-2 text-sm
+             bg-white dark:bg-neutral-950
+             text-black dark:text-neutral-100
+             placeholder:text-neutral-500 dark:placeholder:text-neutral-400
+             caret-black dark:caret-neutral-100
+             border-neutral-300 dark:border-neutral-700
+             focus-visible:outline-none focus:ring-2 focus:ring-purple-400/50 focus:border-purple-500
+             focus:bg-purple-50 dark:focus:bg-purple-900/20"
+  rows={3}
+  placeholder="e.g., 1 bowl oatmeal (60g oats) with 200ml 2% milk + 1 banana; 2 eggs in 1 tsp olive oil"
+  value={mealText}
+  onChange={(e) => setMealText(e.target.value)}
+/>
+
+
+
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={addMealFromEstimate} disabled={busy || !mealText.trim()} className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-60">AI Coach: Estimate & add</button>
+            <button onClick={addMealFromEstimate} disabled={busy || !mealText.trim()} className="rounded-xl px-3 py-2 text-sm bg-purple-600 text-white dark:bg-purple-500 hover:bg-purple-700 disabled:opacity-60">AI Coach: Estimate & add</button>
             <button onClick={suggestSwap} disabled={busy} className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800">AI Coach: Quick swap</button>
             <button
               onClick={() => { const name = prompt('Name this meal to reuse later:'); if (name && name.trim()) saveCurrentEstimateAsMeal(name.trim()); }}
               disabled={busy || !previewMeal}
-              className="rounded-xl px-3 py-2 text-sm bg-indigo-600 text-white dark:bg-indigo-500 disabled:opacity-60"
+              className="flex-1 rounded-xl border bg-white dark:bg-neutral-950 text-sm p-2
+           border-neutral-300 dark:border-neutral-700
+           focus-visible:outline-none focus:ring-2 focus:ring-purple-400/50 focus:border-purple-500
+           focus:bg-purple-50 dark:focus:bg-purple-900/20"
               title="Save the current AI estimate as a reusable meal"
             >
               Save meal for future use
@@ -1426,76 +1445,63 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
           </div>
         </div>
 
-        {/* Meals table */}
-        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 overflow-x-auto bg-white dark:bg-neutral-900">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="bg-neutral-100 dark:bg-neutral-800 text-left">
-                <th className="p-2">Meal</th><th className="p-2">Cal</th><th className="p-2">P</th><th className="p-2">C</th><th className="p-2">F</th><th className="p-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {meals.map((m) => (
-                <tr key={m.id} className="border-t border-neutral-200 dark:border-neutral-800">
-                  <td className="p-2 align-top">{m.meal_summary || m.name}</td>
-                  <td className="p-2">{m.calories}</td>
-                  <td className="p-2">{m.protein ?? '—'}</td>
-                  <td className="p-2">{m.carbs ?? '—'}</td>
-                  <td className="p-2">{m.fat ?? '—'}</td>
-                  <td className="p-2 flex gap-2">
-                    <button className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800" onClick={() => coachMealRow(m)}>AI Coach: Suggest Alternative</button>
-                    <button className="px-2 py-1 rounded-lg bg-red-600 text-white dark:bg-red-500" onClick={() => deleteFoodLocal(m.id)}>Remove</button>
-                  </td>
-                </tr>
-              ))}
-              <tr className="border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 font-semibold">
-                <td className="p-2">Totals (meals)</td>
-                <td className="p-2">{totalsFromMeals.calories}</td>
-                <td className="p-2">{totalsFromMeals.protein}</td>
-                <td className="p-2">{totalsFromMeals.carbs}</td>
-                <td className="p-2">{totalsFromMeals.fat}</td>
-                <td className="p-2"></td>
-              </tr>
-            </tbody>
-          </table>
+        
+        {/* Meals list — mobile-first cards */}
+        <div className="space-y-2">
+          {meals.map((m) => (
+            <MealCard
+              key={m.id}
+              meal={{
+                id: m.id,
+                title: (m.meal_summary || m.name || '').toString(),
+                desc: (m.meal_summary || m.name || '')?.toString(),
+                calories: m.calories,
+                protein: m.protein,
+                carbs: m.carbs,
+                fat: m.fat,
+              }}
+              onSuggest={() => coachMealRow(m)}
+              onRemove={() => deleteFoodLocal(m.id)}
+            />
+          ))}
+          <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3">
+            <div className="flex items-center justify-between text-sm">
+              <div className="font-semibold">Totals (meals)</div>
+              <div className="flex gap-2 text-xs">
+                <span>Cal: {totalsFromMeals.calories}</span>
+                <span>P: {totalsFromMeals.protein}</span>
+                <span>C: {totalsFromMeals.carbs}</span>
+                <span>F: {totalsFromMeals.fat}</span>
+              </div>
+            </div>
+          </div>
         </div>
+{/*
+  🟣 Add Workout section (removed per request; using Weekly Plan page instead)
+*/}
 
-        {/* 🟣 Add Workout section (removed per request; using Weekly Plan page instead) */}
         {/* (UI intentionally removed) */}
 
-        {/* Workouts table */}
-        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 overflow-x-auto bg-white dark:bg-neutral-900 mt-4">
-          <div className="px-3 pt-3 text-sm font-semibold">Workouts</div>
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="bg-neutral-100 dark:bg-neutral-800 text-left">
-                <th className="p-2">Workout</th>
-                <th className="p-2">Burn (kcal)</th>
-                <th className="p-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {workouts.map((w) => (
-                <tr key={w.id} className="border-t border-neutral-200 dark:border-neutral-800">
-                  <td className="p-2">{w.kind}</td>
-                  <td className="p-2">{w.calories}</td>
-                  <td className="p-2 flex gap-2">
-                    <button className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800" onClick={() => startEditWorkout(w)}>Edit</button>
-                    <button className="px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800" onClick={() => suggestWorkoutForRow(w.kind, w.id)}>Suggest workout</button>
-                    <button className="px-2 py-1 rounded-lg bg-red-600 text-white dark:bg-red-500" onClick={() => removeWorkout(w.id)}>Remove</button>
-                  </td>
-                </tr>
-              ))}
-              {workouts.length === 0 && (
-                <tr>
-                  <td className="p-2 text-neutral-500 dark:text-neutral-400" colSpan={3}>No workouts logged yet.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        
+        {/* Workouts list — mobile-first cards */}
+        <div className="mt-4 space-y-2">
+          <div className="px-1 text-sm font-semibold">Workouts</div>
+          {workouts.map((w) => (
+            <WorkoutCard
+              key={w.id}
+              item={{ id: w.id, title: w.kind, calories: w.calories }}
+              onEdit={() => startEditWorkout(w)}
+              onSuggest={() => suggestWorkoutForRow(w.kind, w.id)}
+              onRemove={() => removeWorkout(w.id)}
+            />
+          ))}
+          {workouts.length === 0 && (
+            <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 text-sm text-neutral-500 dark:text-neutral-400">
+              No workouts logged yet.
+            </div>
+          )}
         </div>
-
-        {/* Coaching modal */}
+{/* Coaching modal */}
         <Modal isOpen={coachOpen} onClose={() => setCoachOpen(false)} title="AI Coach Suggestions">
           <div>{coachText ? `• ${coachText}` : 'No suggestions.'}</div>
         </Modal>
@@ -1796,31 +1802,79 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
 }
 
 /* ---------- UI atoms ---------- */
-function SummaryPill({ label, value }: { label: string; value: string }) {
+function SummaryPill({
+  label,
+  value,
+  variant = 'target', // 'target' | 'exercise' | 'allowance'
+}: {
+  label: string;
+  value: string | number;
+  variant?: 'target' | 'exercise' | 'allowance';
+}) {
+  const styles: Record<string, string> = {
+    target:
+      'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-900/20 dark:text-purple-300 dark:border-purple-800',
+    exercise:
+      'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800',
+    allowance:
+      'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-900/20 dark:text-indigo-300 dark:border-indigo-800',
+  };
+
   return (
-    <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 px-3 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{label}</div>
+    <div
+      className={[
+        'rounded-2xl border px-3 py-2 shadow-sm',
+        'hover:ring-2 hover:ring-current/20 transition-shadow',
+        styles[variant],
+      ].join(' ')}
+    >
+      <div className="text-[11px] uppercase tracking-wide opacity-80">{label}</div>
       <div className="text-sm font-semibold">{value}</div>
     </div>
   );
 }
-function MacroMeter({ title, used, goal, unit }: { title: string; used: number; goal: number; unit: string }) {
+
+function MacroMeter({
+  title,
+  used,
+  goal,
+  unit,
+}: {
+  title: string;
+  used: number;
+  goal: number;
+  unit: string;
+}) {
   const hasGoal = Number(goal) > 0;
   const pct = hasGoal ? Math.max(0, Math.min(100, (used / goal) * 100)) : 0;
   const goalLabel = hasGoal ? Math.round(goal).toString() : '—';
+
   return (
-    <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3">
-      <div className="flex items-baseline justify-between mb-2">
-        <h3 className="text-sm font-medium">{title}</h3>
-        <span className="text-xs text-neutral-500 dark:text-neutral-400">{Math.round(used)} / {goalLabel} {unit}</span>
+    <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 text-center">
+      {/* Title + value centered on two lines */}
+      <div className="mb-2">
+        <div className="text-sm font-medium text-purple-600 dark:text-purple-400">{title}</div>
+        <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
+          {Math.round(used)}
+          <span className="opacity-70"> / {goalLabel} {unit}</span>
+        </div>
       </div>
-      <div className="h-3 w-full rounded-full bg-neutral-100 dark:bg-neutral-900 overflow-hidden">
-        <div className="h-3 rounded-full" style={{ width: `${pct}%`, background: 'currentColor' }} />
+
+      {/* Progress bar */}
+      <div className="h-3 w-full rounded-full overflow-hidden bg-neutral-100 dark:bg-neutral-900">
+        <div
+          className="h-3 rounded-full bg-gradient-to-r from-purple-500 via-fuchsia-500 to-purple-600 transition-[width] duration-700 ease-out"
+          style={{ width: `${pct}%` }}
+        />
       </div>
-      <div className="mt-1 text-right text-[11px] text-neutral-500 dark:text-neutral-400">{Math.round(pct)}%</div>
+
+      {/* Percent */}
+      <div className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">{Math.round(pct)}%</div>
     </div>
   );
 }
+
+
 function MiniCard({ title, rows }: { title: string; rows: [string, string][] }) {
   return (
     <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3">
@@ -1842,6 +1896,21 @@ function Field({ label, value, onChange, suffix }: { label: string; value: numbe
       <div className="text-xs text-neutral-500 mb-1">{label}{suffix ? ` (${suffix})` : ''}</div>
       <input type="number" min={0} className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
         value={Number.isFinite(value) ? value : 0} onChange={(e) => onChange(Number(e.target.value || 0))} />
+        <div className="mx-auto w/full max-w-screen-sm px-3 pb-24 pt-4">
+  …
+  {/* place it here, near the end of the container */}
+  <SummaryTray
+    remainingKcal={remainingCalories}
+    remainingProtein={remainingProtein}
+    remainingCarbs={remainingCarbs}
+    remainingFat={remainingFat}
+    onAdd={() => {
+      const el = document.getElementById('meal-input');
+      if (el) (el as HTMLTextAreaElement).focus();
+    }}
+  />
+</div>
+
     </div>
   );
 }

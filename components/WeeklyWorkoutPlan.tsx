@@ -366,11 +366,26 @@ async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promis
 function Btn(props: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button {...props} className={`Btn ${props.className||''}`}>{props.children}</button> }
 function Card({children}:{children:React.ReactNode}){ return <div className="Card">{children}</div> }
 
-function BlockView({b}:{b:PlanBlock}) {
+/* Compact block tile used in the collapsed view */
+function BlockTile({ b }: { b: PlanBlock }) {
+  return (
+    <div className={`Tile Tile-${b.kind}`}>
+      <div className="TileKind">{(b.kind || 'block').replace(/\b\w/g, c => c.toUpperCase())}</div>
+      <div className="TileText clamp-2">{b.text || ''}</div>
+      <div className="TileMeta">
+        {b.minutes ? <span className="TilePill">{b.minutes} min</span> : null}
+        {b.loadRx ? <span className="TilePill">{b.loadRx}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/* Full block (shown only when expanded) */
+function BlockView({ b }: { b: PlanBlock }) {
   return (
     <div className="Block">
-      <div className="BlockKind">{titleCase(b.kind)}</div>
-      <pre className="BlockText">{b.text}</pre>
+      <div className="BlockKind">{(b.kind || 'block').replace(/\b\w/g, c => c.toUpperCase())}</div>
+      <pre className="BlockText">{b.text || ''}</pre>
       <div className="MetaRow">
         {b.loadRx ? <span className="Pill">Load: {b.loadRx}</span> : null}
         {b.minutes ? <span className="Pill">{b.minutes} min</span> : null}
@@ -379,24 +394,44 @@ function BlockView({b}:{b:PlanBlock}) {
       {b.scale ? <div className="Coach"><strong>Scale:</strong> {b.scale}</div> : null}
       {b.coach ? <div className="Coach"><strong>Coach:</strong> {b.coach}</div> : null}
     </div>
-  )
+  );
 }
 
-function DayCard({d, onHide}:{d:PlanDay; onHide:()=>void}) {
+/* Day card: collapsed (compact tiles) by default; expand to see full blocks */
+function DayCard({ d, onHide }: { d: PlanDay; onHide: () => void }) {
+  const [open, setOpen] = React.useState(false);
+
   return (
     <div className="DayCard">
       <div className="DayHeader">
         <div>
           <div className="DayTitle">{d.title}</div>
-          <div className="DaySummary">Time cap: ~{d.minutes} min</div>
-          <div className="DaySummary">{d.summary}</div>
+          <div className="DaySummary">~{d.minutes} min • {d.summary}</div>
         </div>
-        <Btn onClick={onHide} title="Hide this WOD">Hide</Btn>
+
+        <div className="HeaderActions">
+          <button className="Btn ghost" onClick={() => setOpen(o => !o)}>
+            {open ? 'Hide details' : 'Show details'}
+          </button>
+          <button className="Btn" onClick={onHide}>Hide</button>
+        </div>
       </div>
-      <div className="Blocks">{d.blocks.map((b, i) => <BlockView key={i} b={b} />)}</div>
+
+      {!open ? (
+        /* Compact grid */
+        <div className="TilesGrid">
+          {d.blocks.map((b, i) => <BlockTile key={i} b={b} />)}
+        </div>
+      ) : (
+        /* Full detail */
+        <div className="Blocks">
+          {d.blocks.map((b, i) => <BlockView key={i} b={b} />)}
+        </div>
+      )}
     </div>
-  )
+  );
 }
+
 
 function WeeklyPlanSkeleton() {
   return (
@@ -803,66 +838,510 @@ export default function WeeklyWorkoutPlan() {
       </div>
 
       <style>{`
-/* ---- Inputs: light defaults ---- */
-.Field { color: #0b121a; background: rgba(255,255,255,0.95); border-color: rgba(0,0,0,0.25); }
-.Field::placeholder { color: rgba(0,0,0,0.45); }
-
-/* ---- Inputs: dark theme overrides ---- */
-@media (prefers-color-scheme: dark) {
-  .Field, select.Field, textarea.Field, input.Field {
-    color: #E6EDF3;
-    background: rgba(255,255,255,0.06);
-    border-color: rgba(255,255,255,0.22);
-  }
-  .Field::placeholder { color: rgba(230,237,243,0.55); }
-  select.Field option { color: #E6EDF3; background: #0B0F14; }
-  input[type="number"].Field { color: #E6EDF3; }
-  .Field:focus { outline: none; border-color: rgba(99,179,237,0.7); box-shadow: 0 0 0 3px rgba(99,179,237,0.18); }
-  .Field:disabled { color: rgba(230,237,243,0.45); background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.15); }
+:root{
+  --purple-500:#8b5cf6;
+  --purple-600:#7c3aed;
+  --purple-700:#6d28d9;
+  --purple-800:#5b21b6;
+  --surface: rgba(255,255,255,0.9);
+  --surface-dark: rgba(255,255,255,0.06);
+  --border: rgba(0,0,0,0.12);
+  --border-dark: rgba(255,255,255,0.16);
 }
 
-.Field { pointer-events: auto; position: relative; z-index: 1; }
-.Panel{padding:16px;border:1px solid rgba(128,128,128,0.25);border-radius:14px;margin-bottom:16px}
-.PanelHeader{font-weight:600;display:flex;align-items:center;margin-bottom:10px}
-.Source{margin-left:8px;font-size:12px;opacity:0.75}
-.Grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:10px}
+.PlanRoot{max-width:1100px;margin:0 auto;padding:16px}
+.Panel{
+  padding:16px;border:1px solid var(--border);border-radius:16px;margin-bottom:16px;
+  background: linear-gradient(180deg, rgba(139,92,246,0.10), transparent);
+}
+@media (prefers-color-scheme: dark){
+  .Panel{border-color:var(--border-dark);background: linear-gradient(180deg, rgba(124,58,237,0.12), rgba(124,58,237,0.06));}
+}
+
+/* === Compact tiles ======================================================== */
+.TilesGrid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+}
+@media (max-width: 720px){
+  .TilesGrid{ grid-template-columns:1fr; }
+}
+
+.Tile{
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:10px;
+  background:rgba(139,92,246,0.06);      /* subtle purple tint */
+}
+@media (prefers-color-scheme: dark){
+  .Tile{ border-color:var(--border-dark); background:rgba(139,92,246,0.12); }
+}
+.TileKind{
+  font-weight:700;
+  margin-bottom:4px;
+  color:#0b121a;
+}
+@media (prefers-color-scheme: dark){ .TileKind{ color:#F6F8FA; } }
+
+.TileText{ font-size:13px; color:#111827; }
+@media (prefers-color-scheme: dark){ .TileText{ color:#E5E7EB; } }
+
+/* 2-line clamp for compact view */
+.clamp-2{
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
+}
+
+.TileMeta{ display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+.TilePill{
+  padding:2px 8px; border-radius:999px; font-size:12px;
+  background:rgba(139,92,246,0.18); color:#4c1d95;
+  border:1px solid rgba(139,92,246,0.28);
+}
+@media (prefers-color-scheme: dark){
+  .TilePill{ color:#e9d5ff; background:rgba(139,92,246,0.28); border-color:rgba(139,92,246,0.38); }
+}
+
+/* Header action button variant */
+.Btn.ghost{
+  background:transparent;
+  color:var(--purple-600);
+  border:1px solid rgba(139,92,246,0.45);
+}
+.Btn.ghost:hover{ background:rgba(139,92,246,0.10); }
+.HeaderActions{ display:flex; gap:8px; align-items:center; }
+
+.PanelHeader{
+  font-weight:700;display:flex;align-items:center;margin-bottom:14px;
+  background: linear-gradient(90deg, var(--purple-600), var(--purple-500));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  letter-spacing:.2px;font-size:18px;
+}
+.Source{margin-left:8px;font-size:12px;opacity:0.8}
+
+.Grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px}
 .Col{display:flex;flex-direction:column}
-.Label{font-size:12px;opacity:0.8;margin-bottom:4px}
+.Label{
+  font-size:12px;
+  margin-bottom:4px;
+  color:#0b121a;       /* darker label text in light mode */
+  opacity:1;           /* remove dimming */
+}
+
+@media (prefers-color-scheme: dark){
+  .Label{ color:#E6EDF3; }
+}
+
+.Field{
+  width:100%;box-sizing:border-box;padding:0.6rem 0.8rem;border-radius:12px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  color:#0b121a;                   /* force dark text */
+  transition: box-shadow .15s ease, border-color .15s ease, background .2s ease;
+}
+.Field::placeholder{ color:rgba(0,0,0,0.55); }  /* darker placeholder */
+.Field:focus{outline:none;border-color:var(--purple-600);
+  box-shadow:0 0 0 3px rgba(124,58,237,0.20);background:#fbf7ff}
+
+@media (prefers-color-scheme: dark){
+  .Field{background:var(--surface-dark);border-color:var(--border-dark);color:#E6EDF3}
+  .Field::placeholder{color:rgba(230,237,243,0.55)}
+  .Field:focus{border-color:var(--purple-500);box-shadow:0 0 0 4px rgba(139,92,246,0.28);background:rgba(124,58,237,0.10)}
+  select.Field option{color:#E6EDF3;background:#0B0F14}
+}
+
 .Row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
 .Chips{display:flex;gap:8px;flex-wrap:wrap}
-.Chip{background:rgba(128,128,128,0.15);padding:4px 8px;border-radius:999px}
-.Badge{font-size:12px;opacity:0.8;margin-top:4px}
+.Chip{
+  background:rgba(139,92,246,0.12);padding:4px 10px;border-radius:999px;
+  color:#4c1d95;border:1px solid rgba(139,92,246,0.25)
+}
+@media (prefers-color-scheme: dark){
+  .Chip{color:#d6bcfa;background:rgba(139,92,246,0.20);border-color:rgba(139,92,246,0.35)}
+}
+.Chip button{margin-left:6px}
+
+.Badge{font-size:12px;opacity:0.85;margin-top:4px}
 .LegacyNote{font-size:12px;opacity:0.8}
 .EquipGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:8px}
-.EquipCol{border:1px dashed rgba(128,128,128,0.25);border-radius:10px;padding:10px}
+.EquipCol{border:1px dashed var(--border);border-radius:12px;padding:10px}
+@media (prefers-color-scheme: dark){ .EquipCol{border-color:var(--border-dark)} }
 .ChipRow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
 .Parser{margin:8px 0}
-.Field{width:100%;box-sizing:border-box;padding:0.5rem 0.75rem;border-radius:10px;border:1px solid rgba(128,128,128,0.35)}
-.Btn{padding:0.5rem 0.75rem;border-radius:10px;border:1px solid rgba(128,128,128,0.35);background:transparent;display:inline-flex;align-items:center;gap:6px}
-.Actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
-.Notice{margin-top:10px;padding:10px;border-radius:10px;border:1px solid rgba(255,165,0,0.35);background:rgba(255,165,0,0.08)}
-.Week{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-.Empty{display:flex;align-items:center;opacity:0.8;padding:24px;border:1px dashed rgba(128,128,128,0.3);border-radius:12px}
-.Card{padding:12px;border-radius:12px;border:1px solid rgba(128,128,128,0.25);background-color:var(--tw-prose-bg,transparent);overflow:hidden}
-.CardActions{display:flex;justify-content:flex-end;margin-top:8px}
-.Block{padding:10px 0;border-top:1px solid rgba(128,128,128,0.2)}
+
+.Btn{
+  padding:0.55rem 0.9rem;border-radius:12px;border:1px solid rgba(139,92,246,0.45);
+  background: linear-gradient(180deg, rgba(139,92,246,0.95), rgba(124,58,237,0.95));
+  color:white;font-weight:600;letter-spacing:.15px;
+  transform: translateZ(0); transition: transform .06s ease, box-shadow .15s ease, opacity .15s ease;
+  box-shadow: 0 6px 16px rgba(124,58,237,0.25);
+}
+.Btn:hover{transform:translateY(-1px);box-shadow:0 10px 22px rgba(124,58,237,0.32)}
+.Btn:active{transform:translateY(0)}
+.Btn:disabled{opacity:.6;cursor:not-allowed}
+
+.Actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+
+.Notice{
+  margin-top:12px;padding:12px;border-radius:12px;
+  border:1px solid rgba(255,165,0,0.35);background:rgba(255,165,0,0.08)
+}
+
+.Week{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.Empty{display:flex;align-items:center;opacity:0.85;padding:24px;border:1px dashed var(--border);border-radius:14px}
+
+.Card{
+  padding:14px;border-radius:14px;border:1px solid var(--border);
+  background:linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.75));
+  overflow:hidden; box-shadow: 0 2px 14px rgba(0,0,0,0.04);
+}
+@media (prefers-color-scheme: dark){
+  .Card{border-color:var(--border-dark);background:linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.04))}
+}
+.CardActions{display:flex;justify-content:flex-end;margin-top:10px}
+
+.Block{padding:10px 0;border-top:1px solid rgba(128,128,128,0.18)}
 .Block:first-child{border-top:none}
-.BlockKind{font-weight:600;margin-bottom:4px}
+.BlockKind{
+  font-weight:700;margin-bottom:4px;
+  background:linear-gradient(90deg, var(--purple-600), var(--purple-500));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
 .BlockText{white-space:pre-wrap}
 .MetaRow{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
-.Pill{padding:2px 8px;border-radius:999px;background:rgba(128,128,128,0.15);font-size:12px}
+.Pill{padding:2px 8px;border-radius:999px;background:rgba(139,92,246,0.12);font-size:12px;color:#4c1d95;border:1px solid rgba(139,92,246,0.25)}
+@media (prefers-color-scheme: dark){ .Pill{color:#d6bcfa;background:rgba(139,92,246,0.18);border-color:rgba(139,92,246,0.35)} }
 .Coach{margin-top:6px;font-size:12px;opacity:0.9}
+
 .DayCard{display:flex;flex-direction:column}
 .DayHeader{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.DayTitle{font-weight:700}
-.DaySummary{opacity:0.8;font-size:12px}
-.PreviewCard{margin-top:10px;border:1px solid rgba(128,128,128,0.25);border-radius:12px;padding:10px;background:rgba(128,128,128,0.05)}
-.PreviewHeader{font-weight:600;margin-bottom:6px}
+.DayTitle{ font-weight:800; letter-spacing:.2px; color:#0b121a; }
+@media (prefers-color-scheme: dark){ .DayTitle{ color:#F6F8FA; } }
+.DaySummary{
+  font-size:12px;
+  color:#1f2937;     /* darker summary text */
+  opacity:1;         /* no fading */
+}
+
+@media (prefers-color-scheme: dark){ .DaySummary{ color:#CBD5E1; } }
+
+.PreviewCard{margin-top:12px;border:1px solid var(--border);border-radius:12px;padding:12px;background:rgba(139,92,246,0.06)}
+@media (prefers-color-scheme: dark){ .PreviewCard{border-color:var(--border-dark);background:rgba(139,92,246,0.12)} }
+.PreviewHeader{font-weight:700;margin-bottom:6px}
 .PreviewTable{width:100%;border-collapse:collapse}
 .PreviewTable th,.PreviewTable td{border-bottom:1px solid rgba(128,128,128,0.2);text-align:left;padding:6px 8px;font-size:14px}
 .PreviewTable tr:last-child td{border-bottom:none}
-.PreviewHint{font-size:12px;opacity:0.8;margin-top:4px}
-@media (max-width: 1000px){ .Week{grid-template-columns:1fr} .EquipGrid{grid-template-columns:1fr} }
+.PreviewHint{font-size:12px;opacity:0.85;margin-top:4px}
+
+@media (max-width: 1000px){
+  .Week{grid-template-columns:1fr}
+  .EquipGrid{grid-template-columns:1fr}
+}
+/* === FIX: High-contrast labels & headings on dark purple background ======= */
+
+/* Labels above the selects/inputs */
+.Panel .Label{
+  color:#F5F3FF;        /* very light lavender for dark bg */
+  opacity:1;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.35);  /* subtle lift on dark */
+}
+@media (prefers-color-scheme: light){
+  .Panel .Label{ color:#111827; text-shadow:none; }
+}
+
+/* Small section headings like “Focus Areas”, “Equipment (chips)” */
+.PanelSubhead{
+  color:#F5F3FF;
+  opacity:0.98;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.35);
+}
+@media (prefers-color-scheme: light){
+  .PanelSubhead{ color:#1f2937; text-shadow:none; }
+}
+
+/* Top header text: make it solid & readable in dark mode */
+.PanelHeader{
+  background:none;            /* remove gradient text for dark */
+  color:#F8F7FF;              /* bright neutral-lavender */
+  text-shadow: 0 1px 0 rgba(0,0,0,0.45);
+}
+@media (prefers-color-scheme: light){
+  .PanelHeader{
+    color:#4c1d95;            /* brand purple in light mode */
+    text-shadow:none;
+  }
+}
+
+/* Ensure the select text itself stays readable inside the dark panel */
+select.Field{
+  color:#0b121a;
+}
+@media (prefers-color-scheme: dark){
+  select.Field{
+    color:#FFFFFF;            /* white text inside selects on dark */
+    background:var(--surface-dark);
+  }
+}
+
+/* Slightly darken placeholders so they show up against the dark field */
+.Field::placeholder{
+  color:rgba(0,0,0,0.65);
+}
+@media (prefers-color-scheme: dark){
+  .Field::placeholder{
+    color:rgba(246,248,250,0.78);
+  }
+}
+/* === Dark-mode readability pass (labels, headings, icons, badges) ========= */
+@media (prefers-color-scheme: dark){
+  /* 1) Form labels above controls */
+  .Panel .Label,
+  .EquipCol .Label {
+    color:#EDE9FE !important;          /* bright lavender */
+    opacity:1 !important;
+    text-shadow:0 1px 0 rgba(0,0,0,.45);
+  }
+  .Panel .Label svg,
+  .EquipCol .Label svg {
+    stroke:#EDE9FE !important;          /* lucide-react inherits currentColor; force it */
+  }
+
+  /* 2) Section headings (Focus Areas, Equipment (chips)) + their icons */
+  .PanelSubhead,
+  .PanelSubhead svg {
+    color:#EDE9FE !important;
+    stroke:#EDE9FE !important;
+    opacity:1 !important;
+    text-shadow:0 1px 0 rgba(0,0,0,.45);
+  }
+
+  /* 3) Top header row (title icon + "• AI API" source text) */
+  .PanelHeader,
+  .PanelHeader svg,
+  .PanelHeader .Source {
+    color:#F8F7FF !important;
+    stroke:#F8F7FF !important;
+    text-shadow:0 1px 0 rgba(0,0,0,.45);
+  }
+
+  /* 4) The little "Ready" badges under equipment groups */
+  .Badge { color:#EDE9FE !important; opacity:0.95; }
+
+  /* 5) "Paste equipment…" summary line */
+  details.Parser > summary {
+    color:#EDE9FE !important;
+    text-shadow:0 1px 0 rgba(0,0,0,.45);
+  }
+
+  /* 6) Make sure the actual select/input text stays bright too */
+  select.Field,
+  input.Field,
+  textarea.Field {
+    color:#FFFFFF !important;
+    background:var(--surface-dark);
+  }
+  .Field::placeholder { color:rgba(246,248,250,0.85) !important; }
+}
+/* ==== Absolute white text in dark mode (strong overrides) ================== */
+@media (prefers-color-scheme: dark){
+  /* Top title + source tag + their icons */
+  .PlanRoot .PanelHeader,
+  .PlanRoot .PanelHeader .Source,
+  .PlanRoot .PanelHeader *,
+  .PlanRoot .PanelHeader svg {
+    color:#ffffff !important;
+    stroke:#ffffff !important;
+    text-shadow:none !important;
+  }
+
+  /* Form labels above controls (Goal, Experience, Intensity, Style, Days/Week, Minutes/Day) */
+  .PlanRoot .Panel .Label,
+  .PlanRoot .Panel .Label *,
+  .PlanRoot .EquipCol .Label,
+  .PlanRoot .EquipCol .Label * {
+    color:#ffffff !important;
+    stroke:#ffffff !important;
+    opacity:1 !important;
+    text-shadow:none !important;
+  }
+
+  /* Section headings (Focus Areas, Equipment (chips)) and their icons */
+  .PlanRoot .PanelSubhead,
+  .PlanRoot .PanelSubhead *,
+  .PlanRoot .PanelSubhead svg {
+    color:#ffffff !important;
+    stroke:#ffffff !important;
+    opacity:1 !important;
+    text-shadow:none !important;
+  }
+
+  /* Summary lines (e.g., “Paste equipment text …”) */
+  .PlanRoot details.Parser > summary,
+  .PlanRoot details.Parser > summary * {
+    color:#ffffff !important;
+    stroke:#ffffff !important;
+  }
+
+  /* Readability for helper badges like “Ready” */
+  .PlanRoot .Badge { color:#ffffff !important; opacity:1 !important; }
+
+  /* Make sure the text inside selects/inputs/textarea is white too */
+  .PlanRoot select.Field,
+  .PlanRoot input.Field,
+  .PlanRoot textarea.Field {
+    color:#ffffff !important;
+    background:var(--surface-dark);
+  }
+  .PlanRoot .Field::placeholder { color:rgba(255,255,255,0.9) !important; }
+
+  /* Lucide icons anywhere inside the panel should be white */
+  .PlanRoot .Panel svg { stroke:#ffffff !important; }
+}
+/* === DARK MODE: force ALL words/icons to white inside the planner ========== */
+@media (prefers-color-scheme: dark){
+
+  /* 0) Base: every common text element inside the planner becomes white */
+  .PlanRoot,
+  .PlanRoot h1, .PlanRoot h2, .PlanRoot h3, .PlanRoot h4, .PlanRoot h5, .PlanRoot h6,
+  .PlanRoot p, .PlanRoot span, .PlanRoot small, .PlanRoot strong, .PlanRoot em,
+  .PlanRoot label, .PlanRoot legend, .PlanRoot summary,
+  .PlanRoot div, .PlanRoot dt, .PlanRoot dd, .PlanRoot th, .PlanRoot td,
+  .PlanRoot .Label, .PlanRoot .PanelSubhead, .PlanRoot .DayTitle, .PlanRoot .DaySummary,
+  .PlanRoot .Badge, .PlanRoot .Notice, .PlanRoot .Source {
+    color:#ffffff !important;
+  }
+
+  /* 1) Kill any gradient text that made things transparent */
+  .PlanRoot .PanelHeader,
+  .PlanRoot .BlockKind {
+    background:none !important;
+    -webkit-background-clip:initial !important;
+    background-clip:initial !important;
+    -webkit-text-fill-color:#ffffff !important;
+    color:#ffffff !important;
+  }
+
+  /* 2) Inputs, selects, textareas: white text + visible placeholder */
+  .PlanRoot input.Field,
+  .PlanRoot select.Field,
+  .PlanRoot textarea.Field {
+    color:#ffffff !important;
+    background:var(--surface-dark) !important;
+    border-color:var(--border-dark) !important;
+  }
+  .PlanRoot .Field::placeholder { color:rgba(255,255,255,0.88) !important; }
+  .PlanRoot select.Field option {
+    color:#ffffff !important;
+    background:#0B0F14 !important;
+  }
+
+  /* 3) Icons (lucide-react uses stroke) */
+  .PlanRoot svg { stroke:#ffffff !important; }
+
+  /* 4) Chips/Pills keep their backgrounds but their text is white */
+  .PlanRoot .Chip,
+  .PlanRoot .Pill,
+  .PlanRoot .TilePill {
+    color:#ffffff !important;
+  }
+
+  /* 5) Table text in preview/export area */
+  .PlanRoot .PreviewTable th,
+  .PlanRoot .PreviewTable td { color:#ffffff !important; }
+}
+/* === FORCE WHITE TEXT WHEN THE APP IS IN DARK MODE (html.dark) ============ */
+/* Your app toggles dark with <html class="dark">, not via prefers-color-scheme.
+   These rules override colors so all words/icons render white in dark mode. */
+
+html.dark .PlanRoot,
+html.dark .PlanRoot h1, html.dark .PlanRoot h2, html.dark .PlanRoot h3,
+html.dark .PlanRoot h4, html.dark .PlanRoot h5, html.dark .PlanRoot h6,
+html.dark .PlanRoot p,  html.dark .PlanRoot span, html.dark .PlanRoot small,
+html.dark .PlanRoot strong, html.dark .PlanRoot em,
+html.dark .PlanRoot label, html.dark .PlanRoot legend, html.dark .PlanRoot summary,
+html.dark .PlanRoot dt, html.dark .PlanRoot dd,
+html.dark .PlanRoot th, html.dark .PlanRoot td,
+html.dark .PlanRoot .Label,
+html.dark .PlanRoot .PanelSubhead,
+html.dark .PlanRoot .DayTitle,
+html.dark .PlanRoot .DaySummary,
+html.dark .PlanRoot .Badge,
+html.dark .PlanRoot .Notice,
+html.dark .PlanRoot .Source {
+  color:#ffffff !important;
+}
+
+/* Kill gradient text (which made color transparent) */
+html.dark .PlanRoot .PanelHeader,
+html.dark .PlanRoot .BlockKind {
+  background:none !important;
+  -webkit-background-clip:initial !important;
+  background-clip:initial !important;
+  -webkit-text-fill-color:#ffffff !important;
+  color:#ffffff !important;
+}
+
+/* Inputs/selects/textarea text + placeholder */
+html.dark .PlanRoot input.Field,
+html.dark .PlanRoot select.Field,
+html.dark .PlanRoot textarea.Field {
+  color:#ffffff !important;
+  background:var(--surface-dark) !important;
+  border-color:var(--border-dark) !important;
+}
+html.dark .PlanRoot .Field::placeholder { color:rgba(255,255,255,0.88) !important; }
+html.dark select.Field option { color:#ffffff !important; background:#0B0F14 !important; }
+
+/* Icons (lucide uses stroke) */
+html.dark .PlanRoot svg { stroke:#ffffff !important; }
+
+/* Chips / pills / tile pills keep backgrounds but text is white */
+html.dark .PlanRoot .Chip,
+html.dark .PlanRoot .Pill,
+html.dark .PlanRoot .TilePill { color:#ffffff !important; }
+/* === Dark mode EXCEPTION: detailed cards use dark text ===================== */
+/* Your expanded "Show details" content lives inside .Card containers which
+   have a light/paper background. Use dark text there for readability. */
+
+html.dark .PlanRoot .Card,
+html.dark .PlanRoot .Card * {
+  color:#0b121a !important;           /* near-black */
+}
+
+/* Headings inside the card (kill gradient/transparent & force dark) */
+html.dark .PlanRoot .Card .BlockKind,
+html.dark .PlanRoot .Card .DayTitle,
+html.dark .PlanRoot .Card .PanelHeader {
+  background:none !important;
+  -webkit-background-clip:initial !important;
+  background-clip:initial !important;
+  -webkit-text-fill-color:#0b121a !important;
+  color:#0b121a !important;
+}
+
+/* Icons inside the card */
+html.dark .PlanRoot .Card svg {
+  stroke:#0b121a !important;
+}
+
+/* Pills/chips inside the card (keep your purple accents, dark text) */
+html.dark .PlanRoot .Card .Pill,
+html.dark .PlanRoot .Card .Chip,
+html.dark .PlanRoot .Card .TilePill {
+  color:#4c1d95 !important;                         /* brand purple text */
+  background:rgba(139,92,246,0.12) !important;
+  border-color:rgba(139,92,246,0.25) !important;
+}
+
+/* Optional: light gray dividers already in your .Block — keep them subtle */
+html.dark .PlanRoot .Card .Block {
+  border-top:1px solid rgba(17,24,39,0.12) !important;
+}
+
+
 `}</style>
     </div>
   )
