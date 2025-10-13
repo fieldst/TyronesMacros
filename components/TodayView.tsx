@@ -771,7 +771,59 @@ const [editFat, setEditFat] = useState<number | ''>('');
 
 
 
-  // -------- Bootstrap --------
+  
+  // ---- Bootstrap logic extracted so we can re-run it after login ----
+  const bootstrapToday = React.useCallback(async () => {
+    const id = await getCurrentUserId(); 
+    setUserId(id);
+
+    const todayKey = localDateKey(); 
+    setDayKey(todayKey);
+
+    // 1) Use snapshot if present (fast first paint)
+    const snap = loadSnapshot();
+    if (snap && snap.date === todayKey && snap.dayId) {
+      setDay({ id: snap.dayId, date: snap.date, targets: snap.targets, totals: snap.totals } as any);
+      setDayId(String(snap.dayId));
+      latestTotalsAt.current = snap.updatedAt || 0;
+      const t = snap.targets || {};
+      setCurrentGoal({ calories: Number(t.calories||0), protein: Number(t.protein||0), carbs: Number(t.carbs||0), fat: Number(t.fat||0) });
+      if (t.label) setGoalLabel(String(t.label));
+      setGoalRationale((t.rationale ? String(t.rationale) : '') || null);
+    }
+
+    // 2) Ensure today's day row exists and hydrate
+    if (id) {
+      const todayDay = await ensureTodayDay(id);
+      setDay(todayDay); 
+      setDayId(todayDay.id);
+      try { saveSnapshot({ dayId: todayDay.id, date: todayKey, targets: todayDay.targets, totals: todayDay.totals, updatedAt: Date.now() }); } catch {}
+      if (todayDay.totals) applyTotals(todayDay.totals);
+
+      const dayTargets = todayDay.targets;
+      if (dayTargets && typeof dayTargets === 'object') {
+        const macros = {
+          calories: Number(dayTargets.calories || 0),
+          protein:  Number(dayTargets.protein  || 0),
+          carbs:    Number(dayTargets.carbs    || 0),
+          fat:      Number(dayTargets.fat      || 0),
+        };
+        setCurrentGoal(macros);
+        if (dayTargets.label) setGoalLabel(String(dayTargets.label));
+        const why = String(dayTargets.rationale || '') || '';
+        setGoalRationale(why || null);
+
+        setQCalories(macros.calories); setQProtein(macros.protein);
+        setQCarbs(macros.carbs); setQFat(macros.fat);
+        setQLabel(String(dayTargets.label || '')); setQWhy(why);
+        persistTargetsLocally({ ...macros, label: dayTargets.label || null, rationale: why || null });
+      }
+
+      await loadFoods(id, todayKey);
+      await loadWorkouts(id, todayKey);
+    }
+  }, []);
+// -------- Bootstrap --------
   useEffect(() => {
     if (booted.current) return; booted.current = true;
     (async () => {
@@ -834,10 +886,10 @@ const [editFat, setEditFat] = useState<number | ''>('');
     // Listen for Target saves
     const off = eventBus.on<any>('targets:update', async (payload) => {
       const macros = {
-        calories: payload.calories ?? 0,
-        protein:  payload.protein  ?? 0,
-        carbs:    payload.carbs    ?? 0,
-        fat:      payload.fat      ?? 0,
+        calories: (payload.calories ?? payload.kcal) ?? 0,
+        protein:  (payload.protein  ?? payload.protein_g)  ?? 0,
+        carbs:    (payload.carbs    ?? payload.carbs_g)    ?? 0,
+        fat:      (payload.fat      ?? payload.fat_g)      ?? 0,
       };
       setCurrentGoal(macros);
       if (payload.label) setGoalLabel(String(payload.label).toUpperCase());
@@ -863,6 +915,11 @@ const [editFat, setEditFat] = useState<number | ''>('');
             .eq('id', (d as any).id);
           logSb('targets:update update days.targets', updErr, { dayId: (d as any).id });
           setDay(prev => prev ? { ...prev, targets: payload } : prev);
+        try {
+          await recalcAndPersistDay(userId, localDateKey());
+          eventBus.emit('day:totals');
+        } catch (e) { console.warn('recalc after targets:update failed', e); }
+
         }
         persistTargetsLocally(payload);
       } catch (err) {
@@ -873,7 +930,18 @@ const [editFat, setEditFat] = useState<number | ''>('');
     return () => { off(); };
   }, []);
 
-  // Greeting + phrase refresh
+  
+  // Re-run bootstrap when auth state changes (login/logout/token refresh)
+  useEffect(() => {
+    const off = eventBus.on('auth:changed', async () => {
+      try { localStorage.removeItem(SNAP_KEY); } catch {}
+      setLoading(true);
+      await bootstrapToday();
+      setLoading(false);
+    });
+    return off;
+  }, [bootstrapToday]);
+// Greeting + phrase refresh
   useEffect(() => {
     const t = window.setInterval(() => setGreeting(greetingForLocal()), 5 * 60 * 1000);
     return () => window.clearInterval(t);
@@ -1353,9 +1421,14 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
 
         {/* Summary */}
       <div className="grid grid-cols-3 gap-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 mb-4">
-  <SummaryPill variant="target"   label="Current target"   value={`${currentGoal?.calories || macroTargets?.kcal || '—'} kcal`} />
+  <SummaryPill
+  variant="target"
+  label="Current target"
+  value={`${day?.targets?.calories ?? currentGoal?.calories ?? macroTargets?.kcal ?? '—'} kcal`}
+/>
+
   <SummaryPill variant="exercise" label="Exercise added"   value={`${Math.round(day?.totals?.workoutCals ?? 0)} kcal`} />
-  <SummaryPill variant="allowance"label="Daily allowance"  value={`${Math.round(dailyAllowance)} kcal`} />
+  <SummaryPill variant="allowance"label="Remaining calories"  value={`${Math.round(remainingCalories)} kcal`} />
 </div>
 
 

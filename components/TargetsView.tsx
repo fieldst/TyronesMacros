@@ -4,6 +4,7 @@ import Modal from './Modal';
 import { supabase } from '../supabaseClient';
 import { getCurrentUserId } from '../auth';
 import { eventBus } from '../lib/eventBus';
+import { recalcAndPersistDay } from '../lib/recalcDay';
 
 // ✅ Use your previously working local util first (no API dependency)
 import { suggestTargets, type SuggestTargetsResult } from '../utils/suggestTargets';
@@ -684,7 +685,9 @@ async function fetchComboViaApi(p: Profile, t: string, seed?: MacroSet): Promise
       }
 
       // Broadcast to TodayView
+      try { await recalcAndPersistDay(userId!, localDateKey()); eventBus.emit('day:totals'); } catch {}
       eventBus.emit('targets:update', payload);
+      try { eventBus.emit('targets:applied', payload); } catch {}
 
       // Persist profile again to be safe
       await saveProfile();

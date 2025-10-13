@@ -55,12 +55,17 @@ const openSignUp = () => {
     getDisplayName().then((n) => {
       if (mounted) setDisplayName(n)
     })
-    const offAuth = onAuthChange(async () => {
+    const offAuth = onAuthChange(async (event?: any, session?: any) => {
   const n = await getDisplayName()
   if (mounted) {
     setDisplayName(n)
     if (n) setAuthOpen(false)   // ⬅ close modal on successful sign-in/up
   }
+  try {
+    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'SIGNED_OUT') {
+      eventBus.emit('auth:changed', { event, userId: session?.user?.id ?? null })
+    }
+  } catch {}
 })
 
 

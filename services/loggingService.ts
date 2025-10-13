@@ -2,6 +2,7 @@
 import { supabase } from '../supabaseClient'
 import { dateKeyChicago } from '../lib/dateLocal'
 import { recalcAndPersistDay } from '../lib/recalcDay'
+import { eventBus } from '../lib/eventBus'
 
 /** ─────────────────────────────────────────────────────────────────────────────
  * Small logger for Supabase ops
@@ -55,7 +56,8 @@ export async function upsertFoodEntry(args: UpsertFoodArgs) {
   sbLog('upsertFoodEntry', error, { entry_date, calories })
   if (error) throw new Error(error.message || 'Failed to upsert food')
 
-  await recalcAndPersistDay(userId, entry_date)
+  const totals = await recalcAndPersistDay(userId, entry_date)
+  try { eventBus.emit('day:totals', { dayId: entry_date, totals }); } catch {}
 }
 
 export async function deleteFoodEntry(args: { id: string; userId: string }) {
@@ -65,6 +67,9 @@ export async function deleteFoodEntry(args: { id: string; userId: string }) {
   const { error } = await supabase.from('food_entries').delete().eq('id', id).eq('user_id', userId)
   sbLog('deleteFoodEntry', error, { id })
   if (error) throw new Error(error.message || 'Failed to delete food')
+  const date = dateKeyChicago();
+  const totals = await recalcAndPersistDay(userId, date)
+  try { eventBus.emit('day:totals', { dayId: date, totals }); } catch {}
 }
 
 /* ───────────────────────────── WORKOUTS (Option A: required columns only) ───────────────────────────── */
@@ -113,7 +118,8 @@ export async function upsertWorkoutEntry(args: UpsertWorkoutArgs) {
   sbLog('upsertWorkoutEntry', error, { entry_date, kind })
   if (error) throw new Error(error.message || 'Failed to upsert workout')
 
-  await recalcAndPersistDay(userId, entry_date)
+  const totals = await recalcAndPersistDay(userId, entry_date)
+try { eventBus.emit('day:totals', { dayId: entry_date, totals }) } catch {}
 }
 
 // delete can accept dayId but ignore it; TodayView sometimes passes it
@@ -159,5 +165,6 @@ export async function bulkAddWorkoutsToDay(args: {
   sbLog('bulkAddWorkoutsToDay', error, { entry_date, count: rows.length })
   if (error) throw new Error(error.message || 'Failed to add workouts')
 
-  await recalcAndPersistDay(userId, entry_date)
+  const totals = await recalcAndPersistDay(userId, entry_date)
+  try { eventBus.emit('day:totals', { dayId: entry_date, totals }); } catch {}
 }

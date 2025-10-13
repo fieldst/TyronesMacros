@@ -247,11 +247,11 @@ function mapServerWeekToPlanDays(serverWeek: any[]): PlanDay[] {
         minutes: typeof d.minutes === 'number' ? d.minutes : undefined,
         focus: Array.isArray(d.focus) ? d.focus : [],
         blocks: d.blocks.map((b: any) => ({
-          kind: (b.kind || 'metcon') as BlockKind,
+          kind: (inferBlockTitle(String(b.text||''), String(b.kind||'')) as any),
           text: String(b.text || ''),
           minutes: typeof b.minutes === 'number' ? b.minutes : undefined,
           loadPct1RM: typeof b.loadPct1RM === 'number' ? b.loadPct1RM : undefined,
-          loadRx: typeof b.loadRx === 'string' ? b.loadRx : undefined,
+          loadRx: typeof b.loadRx === 'string' ? b.loadRx : (suggestLoadRx(String(b.text||'')) || undefined),
           equipment: Array.isArray(b.equipment) ? b.equipment : undefined,
           scale: typeof b.scale === 'string' ? b.scale : undefined,
           coach: typeof b.coach === 'string' ? b.coach : undefined,
@@ -286,8 +286,9 @@ function mapServerWeekToPlanDays(serverWeek: any[]): PlanDay[] {
     if (main.length) {
       main.forEach((line: string, idx: number) => {
         blocks.push({
-          kind: idx === 0 ? 'metcon' : 'circuit',
+          kind: inferBlockTitle(String(line||''), idx===0 ? 'workout' : 'workout'),
           text: line,
+          loadRx: suggestLoadRx(String(line||'')) || undefined,
           minutes: Math.max(10, Math.round(mins.m / Math.max(1, main.length))),
           scale: 'Keep mechanics crisp; reduce load/reps if form degrades.',
           coach: idx === 0 ? 'Pace so you can keep moving; avoid redlining early.' : 'Smooth transitions; control breathing.',
@@ -369,8 +370,8 @@ function Card({children}:{children:React.ReactNode}){ return <div className="Car
 /* Compact block tile used in the collapsed view */
 function BlockTile({ b }: { b: PlanBlock }) {
   return (
-    <div className={`Tile Tile-${b.kind}`}>
-      <div className="TileKind">{(b.kind || 'block').replace(/\b\w/g, c => c.toUpperCase())}</div>
+    <div className={`Tile Tile-${b.kind || "workout"}`}>
+      <div className="TileKind">{inferBlockTitle(b.text, String(b.kind||''))}</div>
       <div className="TileText clamp-2">{b.text || ''}</div>
       <div className="TileMeta">
         {b.minutes ? <span className="TilePill">{b.minutes} min</span> : null}
@@ -384,7 +385,7 @@ function BlockTile({ b }: { b: PlanBlock }) {
 function BlockView({ b }: { b: PlanBlock }) {
   return (
     <div className="Block">
-      <div className="BlockKind">{(b.kind || 'block').replace(/\b\w/g, c => c.toUpperCase())}</div>
+      <div className="BlockKind">{inferBlockTitle(b.text, String(b.kind||''))}</div>
       <pre className="BlockText">{b.text || ''}</pre>
       <div className="MetaRow">
         {b.loadRx ? <span className="Pill">Load: {b.loadRx}</span> : null}
@@ -462,6 +463,46 @@ function WeeklyPlanSkeleton() {
   )
 }
 
+
+function inferBlockTitle(text: string, fallback: string): string {
+  const t = (text||'').toLowerCase();
+  if (/\bamrap\b|as many reps/i.test(t)) return 'AMRAP';
+  if (/\bfor\s*time\b|\bfor time\b/i.test(t)) return 'For Time';
+  if (/\btabata\b|\b20\s*sec\b.*\b10\s*sec\b/i.test(t)) return 'Tabata';
+  if (/\bemom\b|every\s*minute\s*on\s*the\s*minute/i.test(t)) return 'EMOM';
+  if (/(back|front)?\s*squat|deadlift|bench|press|clean|snatch|row\s*@|db|kb|barbell|sets?\s*x\s*reps?/i.test(t)) return 'Strength';
+  return fallback || 'Workout';
+}
+
+function suggestLoadRx(text: string): string | null {
+  try {
+    const ep = loadEquipmentProfile();
+    const t = (text||'').toLowerCase();
+    if (/barbell|back squat|front squat|deadlift|bench|press|clean|snatch/.test(t)) {
+      const max = typeof ep.barbellMax === 'number' ? ep.barbellMax : 0;
+      if (max > 0) {
+        const pct = /3x|3 x|triple|heavy/.test(t) ? 0.82 : /5x|5 x/.test(t) ? 0.7 : 0.75;
+        return `${Math.round(max * pct)} lb @ ~${Math.round(pct*100)}%`;
+      }
+    }
+    if (/db|dumbbell/.test(t)) {
+      const db = Array.isArray(ep.dumbbells) ? ep.dumbbells.slice().sort((a,b)=>a-b) : [];
+      if (db.length) {
+        const idx = Math.max(0, Math.min(db.length-1, Math.floor(db.length*0.66)));
+        return `${db[idx]} lb DBs (pair)`;
+      }
+    }
+    if (/kb|kettlebell|swing|goblet/.test(t)) {
+      const kb = Array.isArray(ep.kettlebells) ? ep.kettlebells.slice().sort((a,b)=>a-b) : [];
+      if (kb.length) {
+        const idx = Math.max(0, Math.min(kb.length-1, Math.floor(kb.length*0.66)));
+        return `${kb[idx]} lb KB`;
+      }
+    }
+    if (/run|row|bike|assault/.test(t)) return 'RPE 7–8';
+    return null;
+  } catch { return null; }
+}
 /* ── MAIN (API-only) ───────────────────────────────────────────────────────── */
 export default function WeeklyWorkoutPlan() {
   const [meta, setMeta] = useState<PlanMeta>(() => loadLS<PlanMeta>(LS_META, {
