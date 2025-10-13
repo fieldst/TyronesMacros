@@ -1,40 +1,12 @@
-// api/plan-week.ts — COMPATIBLE with WeeklyWorkoutPlan.tsx + openaiService.planWeek
-// - Accepts { minutes, days, goal, style, intensity, experience, focus, equipment }
-// - Also accepts { minutesPerSession, availableDays, goal, style, experience, equipment }
-// - Returns: { success: true, data: { week: DaySpec[] } }
-//   where DaySpec = { day: string, warmup: string[], main: string[], finisher?: string, cooldown: string[] }
-//
-// Uses Response return via wrap() so it works with your existing _wrap.ts.
-// If you prefer Vercel Node style, you can wrap this POST call in a default export.
+// api/plan-week.ts — Node serverless handler (default export) for Vercel
+// Compatible with WeeklyWorkoutPlan.tsx. Returns { success, data: { week, benefits } }.
+// Accepts both payload shapes: 
+// A) { minutes, days, goal, style, intensity, experience, focus, equipment }
+// B) { minutesPerSession, availableDays, goal, style, experience, equipment }
 
-import { z } from 'zod'
-import { wrap, validate } from './_wrap'
+import type { VercelRequest, VercelResponse } from '@vercel/node'
 import OpenAI from 'openai'
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-
-// Input schemas (either shape)
-const SchemaA = z.object({
-  minutes: z.number().min(10).max(120),
-  days: z.number().min(1).max(7),
-  goal: z.string(),
-  style: z.string(),
-  intensity: z.string().optional().default('moderate'),
-  experience: z.string().optional().default('intermediate'),
-  focus: z.array(z.string()).optional().default([]),
-  equipment: z.array(z.string()).optional().default([]),
-})
-
-const SchemaB = z.object({
-  minutesPerSession: z.number().min(10).max(120),
-  availableDays: z.array(z.string()).nonempty(), // ['Mon','Tue',...]
-  goal: z.string(),
-  style: z.string(),
-  experience: z.string().optional().default('intermediate'),
-  equipment: z.array(z.string()).optional().default([]),
-})
-
-// Unified validated input
 type Input = {
   minutes: number
   days: number
@@ -47,50 +19,44 @@ type Input = {
 }
 
 function coerceInput(body: any): Input {
-  // Try A
-  const a = SchemaA.safeParse(body)
-  if (a.success) {
-    return {
-      minutes: a.data.minutes,
-      days: a.data.days,
-      goal: a.data.goal,
-      style: a.data.style,
-      intensity: a.data.intensity || 'moderate',
-      experience: a.data.experience || 'intermediate',
-      focus: a.data.focus || [],
-      equipment: a.data.equipment || [],
+  if (body && typeof body === 'object') {
+    if ('minutes' in body && 'days' in body) {
+      return {
+        minutes: Math.max(10, Math.min(120, Number(body.minutes)||40)),
+        days: Math.max(1, Math.min(7, Number(body.days)||3)),
+        goal: String(body.goal||'recomp'),
+        style: String(body.style||'hybrid'),
+        intensity: String(body.intensity||'moderate'),
+        experience: String(body.experience||'intermediate'),
+        focus: Array.isArray(body.focus) ? body.focus.map(String) : [],
+        equipment: Array.isArray(body.equipment) ? body.equipment.map(String) : [],
+      }
+    }
+    if ('minutesPerSession' in body && 'availableDays' in body) {
+      const days = Array.isArray(body.availableDays) ? body.availableDays.length : 3
+      return {
+        minutes: Math.max(10, Math.min(120, Number(body.minutesPerSession)||40)),
+        days: Math.max(1, Math.min(7, days||3)),
+        goal: String(body.goal||'recomp'),
+        style: String(body.style||'hybrid'),
+        intensity: 'moderate',
+        experience: String(body.experience||'intermediate'),
+        focus: [],
+        equipment: Array.isArray(body.equipment) ? body.equipment.map(String) : [],
+      }
     }
   }
-  // Try B
-  const b = SchemaB.safeParse(body)
-  if (b.success) {
-    return {
-      minutes: b.data.minutesPerSession,
-      days: Math.max(1, Math.min(7, b.data.availableDays.length)),
-      goal: b.data.goal,
-      style: b.data.style,
-      intensity: 'moderate',
-      experience: b.data.experience || 'intermediate',
-      focus: [],
-      equipment: b.data.equipment || [],
-    }
-  }
-  // As last resort, throw SchemaA errors (keeps your previous 400 shape)
-  validate(SchemaA, body)
-  // unreachable
   return {
     minutes: 40, days: 3, goal: 'recomp', style: 'hybrid',
     intensity: 'moderate', experience: 'intermediate', focus: [], equipment: []
   }
 }
 
-// Helpers
 function sanitize(text: string): string {
   return (text || '').replace(/\b(\d+)\s?kg\b/gi, (_, n) => `${Math.round(Number(n)*2.20462)} lb`)
 }
 
 function weekFromPlanBlocksLike(plan: any[]): any[] {
-  // map {title, blocks:[{exercise,sets,reps,minutes}]} → {day,title?, warmup/main/cooldown}
   return (Array.isArray(plan) ? plan : []).map((d: any, i: number) => {
     const main: string[] = (Array.isArray(d.blocks) ? d.blocks : []).map((b: any) => {
       const ex = b.exercise || b.name || 'Move'
@@ -125,35 +91,34 @@ function fallbackWeek(style: string, days: number, minutes: number) {
   return { week: wk, benefits: `${style} plan • ~${minutes} min/session` }
 }
 
-// Build equipment paragraph for the prompt
 function equipmentText(equipment: string[]): string {
   if (!Array.isArray(equipment) || !equipment.length) return 'No equipment listed — bodyweight only.'
   return 'Available Equipment:\\n- ' + equipment.map(s => sanitize(String(s))).join('\\n- ')
 }
 
-export const POST = wrap(async (req: Request) => {
-  // robust JSON body parsing (supports cases where body arrives as string/empty)
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST')
+    return res.status(405).json({ success: false, error: 'Method not allowed' })
+  }
+
+  // Robust JSON parse
   let body: any = {}
   try {
-    const ct = req.headers.get('content-type') || ''
-    if (ct.includes('application/json')) {
-      body = await req.json()
-    } else {
-      const text = await req.text()
-      body = text ? JSON.parse(text) : {}
-    }
+    if (req.headers['content-type']?.includes('application/json')) body = req.body
+    else body = JSON.parse((req as any).rawBody?.toString() || '{}')
   } catch { body = {} }
 
   const inp = coerceInput(body)
 
+  // No API key? Return a valid, non-empty fallback (prevents empty UI)
   if (!process.env.OPENAI_API_KEY) {
     const fb = fallbackWeek(inp.style, inp.days, inp.minutes)
-    return new Response(JSON.stringify({ success: true, data: fb }), {
-      headers: { 'Content-Type': 'application/json' },
-    })
+    return res.status(200).json({ success: true, data: fb })
   }
 
   try {
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
     const system = `You are a pragmatic workout planner. Always return strict JSON; no markdown.`
     const user = `Create a ${inp.days}-day ${inp.style} plan.
 - Goal: ${inp.goal}
@@ -184,7 +149,6 @@ Return ONLY a JSON object with this EXACT shape:
     try {
       const json = JSON.parse(txt)
       if (Array.isArray(json?.week) && json.week.length) {
-        // sanitize any text to lb units
         json.week = json.week.map((d: any) => ({
           day: d.day || 'Day',
           warmup: (Array.isArray(d.warmup) ? d.warmup : []).map(sanitize),
@@ -192,28 +156,19 @@ Return ONLY a JSON object with this EXACT shape:
           finisher: typeof d.finisher === 'string' ? sanitize(d.finisher) : undefined,
           cooldown: (Array.isArray(d.cooldown) ? d.cooldown : []).map(sanitize),
         }))
-        return new Response(JSON.stringify({ success: true, data: json }), {
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return res.status(200).json({ success: true, data: json })
       }
-      // Some models of yours previously returned { plan: [...] }
       if (Array.isArray(json?.plan)) {
         const week = weekFromPlanBlocksLike(json.plan)
-        return new Response(JSON.stringify({ success: true, data: { week, benefits: json.benefits || '' } }), {
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return res.status(200).json({ success: true, data: { week, benefits: json.benefits || '' } })
       }
     } catch {}
 
     const fb = fallbackWeek(inp.style, inp.days, inp.minutes)
-    return new Response(JSON.stringify({ success: true, data: fb }), {
-      headers: { 'Content-Type': 'application/json' },
-    })
+    return res.status(200).json({ success: true, data: fb })
   } catch (err) {
     console.error('[/api/plan-week] error', err)
     const fb = fallbackWeek(inp.style, inp.days, inp.minutes)
-    return new Response(JSON.stringify({ success: true, data: fb }), {
-      headers: { 'Content-Type': 'application/json' },
-    })
+    return res.status(200).json({ success: true, data: fb })
   }
-})
+}
