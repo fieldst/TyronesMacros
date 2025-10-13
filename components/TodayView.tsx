@@ -545,11 +545,13 @@ useEffect(() => {
   : adjustForGoal(tdee, inferred)
 
       const macros = {
-        kcal,
-        protein_g: active.protein_g ?? defaultMacros(kcal, weightLbs, inferred).protein_g,
-        carbs_g:   active.carbs_g   ?? defaultMacros(kcal, weightLbs, inferred).carbs_g,
-        fat_g:     active.fat_g     ?? defaultMacros(kcal, weightLbs, inferred).fat_g,
-      }
+  kcal,
+  protein_g: active?.protein_g ?? defaultMacros(kcal, weightLbs, inferred).protein_g,
+  carbs_g:   active?.carbs_g   ?? defaultMacros(kcal, weightLbs, inferred).carbs_g,
+  fat_g:     active?.fat_g     ?? defaultMacros(kcal, weightLbs, inferred).fat_g,
+}
+
+      
 
       setAllowanceKcal(kcal)
       setMacroTargets(macros)

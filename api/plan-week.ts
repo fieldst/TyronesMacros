@@ -1,212 +1,219 @@
-// api/plan-week.ts — Vercel Serverless Function
-// Aligns response shape with WeeklyWorkoutPlan.tsx by ensuring
-// blocks[].moves is an array of **strings**, not objects.
+// api/plan-week.ts — COMPATIBLE with WeeklyWorkoutPlan.tsx + openaiService.planWeek
+// - Accepts { minutes, days, goal, style, intensity, experience, focus, equipment }
+// - Also accepts { minutesPerSession, availableDays, goal, style, experience, equipment }
+// - Returns: { success: true, data: { week: DaySpec[] } }
+//   where DaySpec = { day: string, warmup: string[], main: string[], finisher?: string, cooldown: string[] }
+//
+// Uses Response return via wrap() so it works with your existing _wrap.ts.
+// If you prefer Vercel Node style, you can wrap this POST call in a default export.
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import OpenAI from 'openai';
-import { z } from 'zod';
+import { z } from 'zod'
+import { wrap, validate } from './_wrap'
+import OpenAI from 'openai'
 
-const PlanWeekSchema = z.object({
-  goal: z.enum(['cut','lean','bulk','recomp']),
-  days_available: z.number().min(1).max(7),
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+
+// Input schemas (either shape)
+const SchemaA = z.object({
   minutes: z.number().min(10).max(120),
-  style: z.enum(['strength','hybrid','bodyweight','cardio','crossfit']),
-  intensity: z.enum(['easy','moderate','hard']).default('moderate'),
-  experience: z.enum(['beginner','intermediate','advanced']).default('intermediate'),
-  equipment: z.array(z.string()).default([])
-});
+  days: z.number().min(1).max(7),
+  goal: z.string(),
+  style: z.string(),
+  intensity: z.string().optional().default('moderate'),
+  experience: z.string().optional().default('intermediate'),
+  focus: z.array(z.string()).optional().default([]),
+  equipment: z.array(z.string()).optional().default([]),
+})
 
-function parsePoundsList(arr: string[]): number[] {
-  const out: number[] = [];
-  for (const s of arr || []) {
-    const m = s.match(/(\d+)\s?lb/i);
-    if (m) out.push(parseInt(m[1], 10));
+const SchemaB = z.object({
+  minutesPerSession: z.number().min(10).max(120),
+  availableDays: z.array(z.string()).nonempty(), // ['Mon','Tue',...]
+  goal: z.string(),
+  style: z.string(),
+  experience: z.string().optional().default('intermediate'),
+  equipment: z.array(z.string()).optional().default([]),
+})
+
+// Unified validated input
+type Input = {
+  minutes: number
+  days: number
+  goal: string
+  style: string
+  intensity: string
+  experience: string
+  focus: string[]
+  equipment: string[]
+}
+
+function coerceInput(body: any): Input {
+  // Try A
+  const a = SchemaA.safeParse(body)
+  if (a.success) {
+    return {
+      minutes: a.data.minutes,
+      days: a.data.days,
+      goal: a.data.goal,
+      style: a.data.style,
+      intensity: a.data.intensity || 'moderate',
+      experience: a.data.experience || 'intermediate',
+      focus: a.data.focus || [],
+      equipment: a.data.equipment || [],
+    }
   }
-  return [...new Set(out)].sort((a, b) => a - b);
-}
-function hasAnyEquipment(equipment: string[]): boolean {
-  return Array.isArray(equipment) && equipment.some(s => /\d+\s?lb|barbell|bench|bike|treadmill/i.test(s));
-}
-function equipmentRulesText(equipment: string[]) {
-  const dbs = parsePoundsList(equipment.filter(s => /db|dumbbell/i.test(s)));
-  const kbs = parsePoundsList(equipment.filter(s => /kb|kettlebell/i.test(s)));
-  const mbs = parsePoundsList(equipment.filter(s => /med(icine)? ball/i.test(s)));
-  const slams = parsePoundsList(equipment.filter(s => /slam ball/i.test(s)));
-
-  const hasBarbell = equipment.some(s => /barbell/i.test(s));
-  const hasBench = equipment.some(s => /bench/i.test(s));
-  const hasBike = equipment.some(s => /assault|air ?bike|bike|row(er)?/i.test(s));
-
-  const lines: string[] = [];
-  if (dbs.length) lines.push(`Dumbbells (lb): ${dbs.join(', ')}`);
-  if (kbs.length) lines.push(`Kettlebells (lb): ${kbs.join(', ')}`);
-  if (mbs.length) lines.push(`Medicine balls (lb): ${mbs.join(', ')}`);
-  if (slams.length) lines.push(`Slam balls (lb): ${slams.join(', ')}`);
-  if (hasBarbell) lines.push(`Barbell with plates`);
-  if (hasBench) lines.push(`Flat bench`);
-  if (hasBike) lines.push(`Assault/Air bike or rower`);
-
-  const rules: string[] = [
-    `Only program movements that are supported by the listed equipment.`,
-    `Express **all** loads in **pounds (lb)** — never kg.`,
-    `No cable/machine work unless explicitly listed.`,
-    `Scale loads for the given intensity and experience.`,
-    `Sessions must complete within the requested minutes.`,
-  ];
-
-  return { lines, rules: rules.join('\n') };
+  // Try B
+  const b = SchemaB.safeParse(body)
+  if (b.success) {
+    return {
+      minutes: b.data.minutesPerSession,
+      days: Math.max(1, Math.min(7, b.data.availableDays.length)),
+      goal: b.data.goal,
+      style: b.data.style,
+      intensity: 'moderate',
+      experience: b.data.experience || 'intermediate',
+      focus: [],
+      equipment: b.data.equipment || [],
+    }
+  }
+  // As last resort, throw SchemaA errors (keeps your previous 400 shape)
+  validate(SchemaA, body)
+  // unreachable
+  return {
+    minutes: 40, days: 3, goal: 'recomp', style: 'hybrid',
+    intensity: 'moderate', experience: 'intermediate', focus: [], equipment: []
+  }
 }
 
-// Fallback plan with string moves
-function getFallbackPlan(style: string, days: number, minutes: number) {
-  const dayNames = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-  const plan = Array.from({ length: days }, (_, i) => ({
-    day: dayNames[i % 7],
-    title: `${style} — ${minutes} min`,
-    blocks: [
-      {
-        name: 'Warm-up',
-        description: '5–8 min easy cardio + dynamic mobility',
-        time_min: 8,
-        moves: ['Jumping Jacks — 2:00', 'World’s Greatest Stretch — 1/side']
-      },
-      {
-        name: 'Main',
-        description: 'Simple, equipment-light circuit',
-        time_min: Math.max(10, minutes - 8 - 5),
-        moves: ['Air Squat — 15 reps', 'Push-up — 12 reps', 'Bent‑over DB Row — 10/arm (25 lb)']
-      },
-      {
-        name: 'Cool-down',
-        description: 'Walk + stretch breathing',
-        time_min: 5,
-        moves: ['Walk — 3:00', 'Quad/Hamstring stretch — 0:30 each']
-      }
+// Helpers
+function sanitize(text: string): string {
+  return (text || '').replace(/\b(\d+)\s?kg\b/gi, (_, n) => `${Math.round(Number(n)*2.20462)} lb`)
+}
+
+function weekFromPlanBlocksLike(plan: any[]): any[] {
+  // map {title, blocks:[{exercise,sets,reps,minutes}]} → {day,title?, warmup/main/cooldown}
+  return (Array.isArray(plan) ? plan : []).map((d: any, i: number) => {
+    const main: string[] = (Array.isArray(d.blocks) ? d.blocks : []).map((b: any) => {
+      const ex = b.exercise || b.name || 'Move'
+      const sets = b.sets != null ? String(b.sets) : null
+      const reps = b.reps != null ? String(b.reps) : null
+      const mins = b.minutes != null ? `${b.minutes} min` : null
+      const load = b.load_lb != null ? `${b.load_lb} lb` : (b.weight_lb != null ? `${b.weight_lb} lb` : null)
+      const parts = [ex, sets && reps ? `— ${sets} x ${reps}` : (reps ? `— ${reps}` : null), mins ? `— ${mins}` : null, load ? `— ${load}` : null].filter(Boolean)
+      return sanitize(parts.join(' '))
+    })
+    return {
+      day: d.day || `Day ${i+1}`,
+      warmup: [],
+      main,
+      cooldown: [],
+    }
+  })
+}
+
+function fallbackWeek(style: string, days: number, minutes: number) {
+  const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+  const wk = Array.from({length: days}, (_,i) => ({
+    day: dayNames[i%7],
+    warmup: ['Jumping jacks — 2:00', 'Dynamic lunge — 10/side'],
+    main: [
+      'Air Squat — 20 reps',
+      'Push‑up — 12 reps',
+      'Bent‑over DB Row — 10/arm (25 lb)',
     ],
-    est_calories: 220
-  }));
-
-  return { plan, benefits: 'Baseline plan used due to API issue.' };
+    cooldown: ['Walk — 3:00','Stretch — 2:00'],
+  }))
+  return { week: wk, benefits: `${style} plan • ~${minutes} min/session` }
 }
 
-// Normalize any object-shaped move to a single string line
-function stringifyMove(m: any): string {
-  if (m == null) return '';
-  if (typeof m === 'string') return m;
-  // known shapes
-  const name = m.name || m.exercise || m.move || 'Move';
-  const sets = m.sets ?? m.sets_x ?? undefined;
-  const reps = m.reps ?? m.repetitions ?? undefined;
-  const time = m.time_min ? `${m.time_min} min` : (m.time ?? undefined);
-  const load = (m.load_lb ?? m.weight ?? m.weight_lb);
-  const side = m.per_side ? ' / side' : '';
-  const parts = [
-    name,
-    sets != null && reps != null ? `— ${sets} x ${reps}` : (reps != null ? `— ${reps}` : undefined),
-    time ? `— ${time}` : undefined,
-    load != null ? ` — ${load} lb${side}` : undefined
-  ].filter(Boolean);
-  return parts.join(' ');
+// Build equipment paragraph for the prompt
+function equipmentText(equipment: string[]): string {
+  if (!Array.isArray(equipment) || !equipment.length) return 'No equipment listed — bodyweight only.'
+  return 'Available Equipment:\\n- ' + equipment.map(s => sanitize(String(s))).join('\\n- ')
 }
 
-function normalizePlanShape(json: any) {
-  if (!json || !Array.isArray(json.plan)) return getFallbackPlan('hybrid', 3, 30);
-  const norm = {
-    plan: json.plan.map((d: any) => ({
-      day: d.day || d.name || 'Day',
-      title: d.title || 'Workout',
-      blocks: (d.blocks || d.sections || []).map((b: any) => ({
-        name: b.name || b.title || 'Block',
-        description: b.description || '',
-        time_min: typeof b.time_min === 'number' ? b.time_min : undefined,
-        moves: (b.moves || b.items || b.exercises || []).map(stringifyMove)
-      })),
-      est_calories: typeof d.est_calories === 'number' ? d.est_calories : (d.calories ?? 200)
-    })),
-    benefits: json.benefits || ''
-  };
-  // Ensure at least one move string exists to avoid empty rendering
-  if (!norm.plan.length || !norm.plan[0].blocks?.length) {
-    return getFallbackPlan('hybrid', 3, 30);
-  }
-  return norm;
-}
+export const POST = wrap(async (req: Request) => {
+  // robust JSON body parsing (supports cases where body arrives as string/empty)
+  let body: any = {}
+  try {
+    const ct = req.headers.get('content-type') || ''
+    if (ct.includes('application/json')) {
+      body = await req.json()
+    } else {
+      const text = await req.text()
+      body = text ? JSON.parse(text) : {}
+    }
+  } catch { body = {} }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).json({ success: false, error: 'Method not allowed' });
-  }
+  const inp = coerceInput(body)
 
-  const parsed = PlanWeekSchema.safeParse(req.body ?? {});
-  if (!parsed.success) {
-    return res.status(400).json({ success: false, error: 'Invalid input', details: parsed.error.flatten() });
-  }
-  const { goal, days_available, minutes, style, equipment, experience, intensity } = parsed.data;
-
-  // No key in prod → return safe fallback so UI renders
   if (!process.env.OPENAI_API_KEY) {
-    const fallback = getFallbackPlan(style, days_available, minutes);
-    return res.status(200).json({ success: true, data: fallback });
+    const fb = fallbackWeek(inp.style, inp.days, inp.minutes)
+    return new Response(JSON.stringify({ success: true, data: fb }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
 
   try {
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const system = `You are a pragmatic workout planner. Always return strict JSON; no markdown.`
+    const user = `Create a ${inp.days}-day ${inp.style} plan.
+- Goal: ${inp.goal}
+- Experience: ${inp.experience}
+- Intensity: ${inp.intensity}
+- Duration: ${inp.minutes} minutes/session
+${equipmentText(inp.equipment)}
 
-    const eqInfo = equipmentRulesText(equipment || []);
-    const eqHeader = hasAnyEquipment(equipment)
-      ? `Available Equipment:\n- ${eqInfo.lines.join('\n- ')}`
-      : 'No equipment listed — use bodyweight only.';
-
-    const systemPrompt = `You are a meticulous workout planner. Output STRICT JSON; NO markdown.`;
-
-    // IMPORTANT: moves must be array of strings
-    const userPrompt = `Create a ${days_available}-day ${style} workout plan:
-- Goal: ${goal}
-- Duration: ${minutes} minutes/session
-- Intensity: ${intensity}
-- Experience: ${experience}
-${eqHeader}
-
-Rules:
-${eqInfo.rules}
-
-Return ONLY a JSON object EXACTLY in this shape (moves MUST be strings):
+Return ONLY a JSON object with this EXACT shape:
 {
-  "plan":[
-    {
-      "day":"Monday",
-      "title":"string",
-      "blocks":[
-        {"name":"Warm-up","description":"string","time_min":8,"moves":["Move — details","Move — details"]},
-        {"name":"Main","description":"string","time_min":22,"moves":["Move — details","Move — details"]},
-        {"name":"Cool-down","description":"string","time_min":5,"moves":["Move — details"]}
-      ],
-      "est_calories": 250
-    }
+  "week":[
+    {"day":"Mon","warmup":["...","..."],"main":["...","..."],"finisher":"optional string","cooldown":["..."]}
   ],
   "benefits":"string"
-}`;
+}`
 
     const out = await client.chat.completions.create({
       model: 'gpt-4o-mini',
       temperature: 0.3,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ]
-    });
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    })
 
-    const text = out.choices?.[0]?.message?.content || '';
-    let json: any;
-    try { json = JSON.parse(text); } catch { json = null; }
+    const txt = out.choices?.[0]?.message?.content || ''
+    try {
+      const json = JSON.parse(txt)
+      if (Array.isArray(json?.week) && json.week.length) {
+        // sanitize any text to lb units
+        json.week = json.week.map((d: any) => ({
+          day: d.day || 'Day',
+          warmup: (Array.isArray(d.warmup) ? d.warmup : []).map(sanitize),
+          main: (Array.isArray(d.main) ? d.main : []).map(sanitize),
+          finisher: typeof d.finisher === 'string' ? sanitize(d.finisher) : undefined,
+          cooldown: (Array.isArray(d.cooldown) ? d.cooldown : []).map(sanitize),
+        }))
+        return new Response(JSON.stringify({ success: true, data: json }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      // Some models of yours previously returned { plan: [...] }
+      if (Array.isArray(json?.plan)) {
+        const week = weekFromPlanBlocksLike(json.plan)
+        return new Response(JSON.stringify({ success: true, data: { week, benefits: json.benefits || '' } }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    } catch {}
 
-    const normalized = normalizePlanShape(json);
-    return res.status(200).json({ success: true, data: normalized });
-  } catch (err: any) {
-    console.error('[/api/plan-week] error:', err?.stack || err);
-    const fallback = getFallbackPlan(style, days_available, minutes);
-    return res.status(200).json({ success: true, data: fallback });
+    const fb = fallbackWeek(inp.style, inp.days, inp.minutes)
+    return new Response(JSON.stringify({ success: true, data: fb }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+  } catch (err) {
+    console.error('[/api/plan-week] error', err)
+    const fb = fallbackWeek(inp.style, inp.days, inp.minutes)
+    return new Response(JSON.stringify({ success: true, data: fb }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
-}
+})
