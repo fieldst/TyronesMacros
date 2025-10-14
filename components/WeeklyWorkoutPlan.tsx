@@ -1650,6 +1650,15 @@ select.Field{
   }
   .Field::placeholder { color:rgba(246,248,250,0.85) !important; }
 }
+select,
+select.Field {
+  background-color: #0b0b0d !important;
+  color: #e6e7eb !important;
+  -webkit-text-fill-color: #e6e7eb !important;
+  border-color: #3a3b42 !important;
+}
+option { color: #0b0b0d; background: #e6e7eb; } /* option list when open */
+
 /* ==== Absolute white text in dark mode (strong overrides) ================== */
 @media (prefers-color-scheme: dark){
   /* Top title + source tag + their icons */
@@ -1845,6 +1854,39 @@ html.dark .PlanRoot .Card .TilePill {
 html.dark .PlanRoot .Card .Block {
   border-top:1px solid rgba(17,24,39,0.12) !important;
 }
+ @supports (-webkit-touch-callout: none) {
+    .Field,
+    input.Field,
+    select.Field,
+    textarea.Field,
+    select,
+    input,
+    textarea {
+      background-color: #0b0b0d !important;   /* dark neutral */
+      color: #e6e7eb !important;              /* near-white text */
+      -webkit-text-fill-color: #e6e7eb !important; /* iOS text color */
+      border-color: #3a3b42 !important;
+    }
+    ::placeholder {
+      color: #9aa0a6 !important;              /* readable placeholder */
+      opacity: 1 !important;
+    }
+  }
+
+  /* Ensure “pills” have high-contrast text on dark backgrounds */
+  .Pill, .Chip, .Badge, .btn-pill {
+    color: #ffffff !important;
+  }
+
+  /* Make the workout cards and labels readable on mobile */
+  @media (max-width: 640px) {
+    .Panel, .WorkoutCard, .WorkoutDay, .Exercise {
+      color: #e6e7eb !important;
+    }
+    .Label, .muted, .subtle {
+      color: #c3c7cf !important;
+    }
+  }         
 
 
 `}</style>
