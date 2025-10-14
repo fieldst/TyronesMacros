@@ -252,7 +252,7 @@ function mapServerWeekToPlanDays(serverWeek: any[]): PlanDay[] {
           minutes: typeof b.minutes === 'number' ? b.minutes : undefined,
           loadPct1RM: typeof b.loadPct1RM === 'number' ? b.loadPct1RM : undefined,
           loadRx: typeof b.loadRx === 'string' ? b.loadRx : (suggestLoadRx(String(b.text||'')) || undefined),
-          equipment: Array.isArray(b.equipment) ? b.equipment : undefined,
+          equipment: toEquipmentArray(meta.equipment, equip)(b.equipment) ? b.equipment : undefined,
           scale: typeof b.scale === 'string' ? b.scale : undefined,
           coach: typeof b.coach === 'string' ? b.coach : undefined,
         })),
@@ -333,16 +333,45 @@ function mapServerWeekToPlanDays(serverWeek: any[]): PlanDay[] {
 /* ── API call (AI path ONLY) ───────────────────────────────────────────────── */
 async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promise<PlanDay[] | null> {
   try {
-    const payload = {
-      minutes:  normalizeNumber(meta.minutesPerDay, 40),
-      days:     normalizeNumber(meta.daysPerWeek, 3),
-      goal:     normalizeGoal(meta.goal),
-      style:    effectiveStyle,
-      intensity:  normalizeIntensity(meta.intensity),
-      experience: normalizeExperience(meta.experience),
-      focus:      (meta.focusAreas || []).map(toStr).filter(Boolean) as string[],
-      equipment:  toEquipmentArray(meta.equipment, equip),
-    }
+   // Build guarded payload (make sure we never send undefined/invalid shapes)
+const payload = {
+  minutes:  normalizeNumber(meta.minutesPerDay, 40),
+  days:     normalizeNumber(meta.daysPerWeek, 3),
+  goal:     normalizeGoal(meta.goal),
+  style:    normalizeStyle(meta.style),
+  intensity:  normalizeIntensity(meta.intensity),
+  experience: normalizeExperience(meta.experience),
+  focus:      (meta.focusAreas || []).map(toStr).filter(Boolean) as string[],
+  equipment:  toEquipmentArray(meta.equipment, equip),
+} as {
+  minutes: number
+  days: number
+  goal: string
+  style: string
+  intensity: string
+  experience: string
+  focus: string[]
+  equipment: string[]
+}
+
+// Final guards (avoid common server rejections)
+if (!payload.style || typeof payload.style !== 'string') {
+  // Fall back to a safe style the server certainly accepts
+  payload.style = 'strength'
+}
+
+// If your server doesn’t recognize some of our newer styles, map them:
+const LEGACY_OK = new Set(['strength','conditioning','circuit','crossfit','hybrid','mobility'])
+if (!LEGACY_OK.has(payload.style)) {
+  // Map likely “new” styles to what the server already knows
+  if (payload.style === 'tabata')      payload.style = 'circuit'
+  if (payload.style === 'bodyweight')  payload.style = 'conditioning'
+}
+
+if (!Array.isArray(payload.equipment)) {
+  payload.equipment = []
+}
+
 
     if (!payload.minutes || !payload.days || !payload.goal || !payload.style) return null
 
