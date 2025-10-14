@@ -131,3 +131,19 @@ input, textarea, select { font-size: 16px !important; }
 .interactive:hover { transform: translateY(-1px); }
 .interactive:active { transform: translateY(0); }
 .interactive { transition: transform 120ms ease, opacity 120ms ease; }
+/* Make native <select> readable in dark mode on mobile */
+.select-dark {
+  color: rgb(229 231 235);               /* text-gray-200 */
+  background-color: rgb(23 23 23);       /* bg-neutral-900 */
+  border-color: rgb(64 64 64);           /* border-neutral-700 */
+  -webkit-text-fill-color: rgb(229 231 235); /* iOS Safari */
+  color-scheme: dark;                    /* hint OS to use dark popovers */
+}
+.select-dark:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, .45); /* purple ring */
+}
+.select-dark option {
+  background-color: rgb(23 23 23);
+  color: rgb(229 231 235);
+}

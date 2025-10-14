@@ -109,6 +109,13 @@ const MOVES: Move[] = [
 
 function titleCase(s: string) { return (s || '').replace(/\b\w/g, c => c.toUpperCase()) }
 function bullets(lines: string[]) { return lines.map(s => `• ${s}`).join('\n') }
+// Mobile-safe integer parsing: digits only, clamped to a range.
+const parseIntSafe = (raw: string, min = 1, max = 999): number | undefined => {
+  const digits = (raw || "").replace(/\D+/g, "");
+  if (!digits) return undefined;
+  const n = Math.max(min, Math.min(max, parseInt(digits, 10)));
+  return Number.isFinite(n) ? n : undefined;
+};
 
 /* ── Equipment chips + parser ───────────────────────────────────────────────── */
 function uniqSorted(arr: number[]): number[] { return Array.from(new Set(arr)).sort((a,b)=>a-b) }
@@ -139,6 +146,15 @@ function normalizeEquipmentText(s: string): EquipmentProfile {
   }
   return { dumbbells: uniqSorted(dumbbells), kettlebells: uniqSorted(kettlebells), barbellMax }
 }
+
+// Only digits -> integer; clamps to [min,max]; empty -> undefined
+// const parseIntSafe = (raw: string, min = 1, max = 999): number | undefined => {
+//   const digits = raw.replace(/\D+/g, "");         // strip non-digits (iOS-safe)
+//   if (!digits) return undefined;
+//   const n = Math.max(min, Math.min(max, parseInt(digits, 10)));
+//   return Number.isFinite(n) ? n : undefined;
+// };
+
 
 /* ── Outbound payload normalizers (fix API errors) ──────────────────────────── */
 const ALLOWED_STYLES = new Set<Style>(['strength','hybrid','bodyweight','cardio','crossfit','emom','tabata','interval','conditioning','finisher','mobility','skill','circuit'])
@@ -252,7 +268,7 @@ function mapServerWeekToPlanDays(serverWeek: any[]): PlanDay[] {
           minutes: typeof b.minutes === 'number' ? b.minutes : undefined,
           loadPct1RM: typeof b.loadPct1RM === 'number' ? b.loadPct1RM : undefined,
           loadRx: typeof b.loadRx === 'string' ? b.loadRx : (suggestLoadRx(String(b.text||'')) || undefined),
-          equipment: toEquipmentArray(meta.equipment, equip)(b.equipment) ? b.equipment : undefined,
+          equipment: Array.isArray(b.equipment) ? b.equipment : undefined,
           scale: typeof b.scale === 'string' ? b.scale : undefined,
           coach: typeof b.coach === 'string' ? b.coach : undefined,
         })),
@@ -333,64 +349,47 @@ function mapServerWeekToPlanDays(serverWeek: any[]): PlanDay[] {
 /* ── API call (AI path ONLY) ───────────────────────────────────────────────── */
 async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promise<PlanDay[] | null> {
   try {
-   // Build guarded payload (make sure we never send undefined/invalid shapes)
-const payload = {
-  minutes:  normalizeNumber(meta.minutesPerDay, 40),
-  days:     normalizeNumber(meta.daysPerWeek, 3),
-  goal:     normalizeGoal(meta.goal),
-  style:    normalizeStyle(meta.style),
-  intensity:  normalizeIntensity(meta.intensity),
-  experience: normalizeExperience(meta.experience),
-  focus:      (meta.focusAreas || []).map(toStr).filter(Boolean) as string[],
-  equipment:  toEquipmentArray(meta.equipment, equip),
-} as {
-  minutes: number
-  days: number
-  goal: string
-  style: string
-  intensity: string
-  experience: string
-  focus: string[]
-  equipment: string[]
-}
+    // ensure style is always present/normalized
+    const effectiveStyle = autoStyleForEquipment(normalizeStyle(meta.style), equip);
 
-// Final guards (avoid common server rejections)
-if (!payload.style || typeof payload.style !== 'string') {
-  // Fall back to a safe style the server certainly accepts
-  payload.style = 'strength'
-}
+    const payload = {
+      minutes: normalizeNumber(meta.minutesPerDay, 40, 5, 180),
+      days:    normalizeNumber(meta.daysPerWeek, 3, 1, 10),
+      goal:       normalizeGoal(meta.goal),
+      style:      effectiveStyle,
+      intensity:  normalizeIntensity(meta.intensity),
+      experience: normalizeExperience(meta.experience),
+      focus:      (meta.focusAreas || []).map(toStr).filter(Boolean) as string[],
+      equipment:  toEquipmentArray(meta.equipment, equip),
+    };
 
-// If your server doesn’t recognize some of our newer styles, map them:
-const LEGACY_OK = new Set(['strength','conditioning','circuit','crossfit','hybrid','mobility'])
-if (!LEGACY_OK.has(payload.style)) {
-  // Map likely “new” styles to what the server already knows
-  if (payload.style === 'tabata')      payload.style = 'circuit'
-  if (payload.style === 'bodyweight')  payload.style = 'conditioning'
-}
+    // quick client-side sanity check
+    if (!payload.minutes || !payload.days || !payload.goal || !payload.style) return null;
 
-if (!Array.isArray(payload.equipment)) {
-  payload.equipment = []
-}
-
-
-    if (!payload.minutes || !payload.days || !payload.goal || !payload.style) return null
-
-    const res = await fetch('/api/plan-week', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const res = await fetch("/api/plan-week", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    })
+    });
 
-    const data: ApiPlanResponse = await res.json()
-    const weekRaw = data?.data?.week
-    if (!data.success || !Array.isArray(weekRaw)) return null
+    // ✅ important: treat 4xx/5xx as failure
+    if (!res.ok) {
+      console.error("plan-week failed:", res.status, await res.text());
+      return null;
+    }
 
-    const mapped = mapServerWeekToPlanDays(weekRaw)
-    return mapped.length ? mapped : null
-  } catch {
-    return null
+    const data: ApiPlanResponse = await res.json();
+    const weekRaw = data?.data?.week;
+    if (!data.success || !Array.isArray(weekRaw)) return null;
+
+    const mapped = mapServerWeekToPlanDays(weekRaw);
+    return mapped.length ? mapped : null;
+  } catch (e) {
+    console.error("fetchPlanFromApi error:", e);
+    return null;
   }
 }
+
 
 /* ── UI components ─────────────────────────────────────────────────────────── */
 function Btn(props: React.ButtonHTMLAttributes<HTMLButtonElement>) { return <button {...props} className={`Btn ${props.className||''}`}>{props.children}</button> }
@@ -663,36 +662,42 @@ useEffect(() => {
   }
 
   // API-ONLY generation
-  async function onGenerate() {
-    setLoading(true)
-    setNotice(null)
-    try {
-      const effectiveStyle = autoStyleForEquipment(normalizeStyle(meta.style), equip);
-      const apiWeek = await fetchPlanFromApi(meta, equip)
-      if (apiWeek && apiWeek.length > 0) {
-        setWeek(apiWeek)
-        setSource('AI API')
-      } else {
-        setWeek([])
-        setSource('AI API (empty)')
-        setNotice(
-          'The AI API returned no workouts to render. Double-check: Goal, Style, Days/Week, Minutes/Day, and Equipment. ' +
-          'If all fields look good, adjust the server formatter to always include at least one item in `main`.'
-        )
-      }
-    } finally {
-      setLoading(false)
+ async function onGenerate() {
+  try {
+    setLoading(true);
+    setNotice(null);
+
+    const apiWeek = await fetchPlanFromApi(meta, equip);
+
+    if (!apiWeek || apiWeek.length === 0) {
+      setWeek([]);
+      setNotice(
+        "The AI API returned no workouts to render. Double-check: Goal, Style, Days/Week, Minutes/Day, and Equipment. If all fields look good, adjust the server formatter to always include at least one item in `main`."
+      );
+      return;
     }
+
+    setWeek(apiWeek);
+  } catch (err) {
+    console.error("onGenerate error:", err);
+    setNotice("Could not generate plan. Please try again.");
+  } finally {
+    setLoading(false);
   }
+}
+
+
 
   const [focusInput, setFocusInput] = React.useState('')
+  const MAX_FOCUS = 10;
 
+  
   function addFocus() {
     const v = focusInput.trim().toLowerCase()
     if (!v) return
     setMeta(m => ({
       ...m,
-      focusAreas: Array.from(new Set([...(m.focusAreas || []), v])).slice(0, 6),
+      focusAreas: Array.from(new Set([...(m.focusAreas || []), v])).slice(0, 10),
     }))
     setFocusInput('')
   }
@@ -759,37 +764,88 @@ useEffect(() => {
           <div className="Grid">
             <div className="Col">
               <label className="Label">Goal</label>
-              <select className="Field" value={meta.goal} onChange={e => setMeta(m => ({...m, goal: e.target.value as Goal}))}>
+              <select className="Field select-dark bg-neutral-900 text-neutral-100 border border-neutral-700 focus:ring-2 focus:ring-purple-500" value={meta.goal} onChange={e => setMeta(m => ({...m, goal: e.target.value as Goal}))}>
                 <option value="cut">cut</option><option value="lean">lean</option><option value="recomp">recomp</option><option value="bulk">bulk</option>
               </select>
             </div>
             <div className="Col">
               <label className="Label">Experience</label>
-              <select className="Field" value={meta.experience} onChange={e => setMeta(m => ({...m, experience: e.target.value as Experience}))}>
+              <select className="Field select-dark bg-neutral-900 text-neutral-100 border border-neutral-700 focus:ring-2 focus:ring-purple-500" value={meta.experience} onChange={e => setMeta(m => ({...m, experience: e.target.value as Experience}))}>
                 <option value="beginner">beginner</option><option value="intermediate">intermediate</option><option value="advanced">advanced</option>
               </select>
             </div>
             <div className="Col">
               <label className="Label">Intensity</label>
-              <select className="Field" value={meta.intensity} onChange={e => setMeta(m => ({...m, intensity: e.target.value as Intensity}))}>
+              <select className="Field select-dark bg-neutral-900 text-neutral-100 border border-neutral-700 focus:ring-2 focus:ring-purple-500" value={meta.intensity} onChange={e => setMeta(m => ({...m, intensity: e.target.value as Intensity}))}>
                 <option value="low">low</option><option value="moderate">moderate</option><option value="high">high</option>
               </select>
             </div>
             <div className="Col">
               <label className="Label">Style</label>
-              <select className="Field" value={meta.style} onChange={e => setMeta(m => ({...m, style: e.target.value as Style}))}>
+              <select className="Field select-dark bg-neutral-900 text-neutral-100 border border-neutral-700 focus:ring-2 focus:ring-purple-500" value={meta.style} onChange={e => setMeta(m => ({...m, style: e.target.value as Style}))}>
                 {Array.from(ALLOWED_STYLES).map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
             <div className="Col">
               <label className="Label">Days / Week</label>
-              <input className="Field" type="number" min={1} max={6} value={meta.daysPerWeek}
-                onChange={e => setMeta(m => ({...m, daysPerWeek: Math.max(1, Math.min(6, parseInt(e.target.value||'3',10)))}))} />
+              <div className="flex flex-wrap gap-2">
+                {[2,3,4,5,6,7,8,9,10].map(d => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setMeta(m => ({ ...m, daysPerWeek: d }))}
+                    className={`px-3 py-2 rounded-xl border text-sm
+                      ${meta.daysPerWeek === d
+                        ? "bg-purple-600 text-white border-purple-500"
+                        : "bg-neutral-900 text-neutral-100 border-neutral-700"}`}
+                    aria-pressed={meta.daysPerWeek === d}
+                  >
+                  {d}d
+                </button>
+                  ))}
+                </div>
             </div>
             <div className="Col">
               <label className="Label">Minutes / Day</label>
-              <input className="Field" type="number" min={30} max={75} value={meta.minutesPerDay}
-                onChange={e => setMeta(m => ({...m, minutesPerDay: Math.max(20, Math.min(120, parseInt(e.target.value||'40',10)))}))} />
+              <div className="flex flex-wrap gap-2 mb-2">
+  {[20,30,40,45,60,75,90].map(mins => (
+    <button
+      key={mins}
+      type="button"
+      onClick={() => setMeta(m => ({ ...m, minutesPerDay: mins }))}
+      className={`px-3 py-2 rounded-xl border text-sm
+        ${meta.minutesPerDay === mins
+          ? "bg-purple-600 text-white border-purple-500"
+          : "bg-neutral-900 text-neutral-100 border-neutral-700"}`}
+      aria-pressed={meta.minutesPerDay === mins}
+    >
+      {mins} min
+    </button>
+  ))}
+</div>
+
+<div className="flex items-center gap-3">
+  <input
+    // Use text + inputMode to get a numeric keypad without iOS's buggy <input type="number">
+    type="text"
+    inputMode="numeric"
+    pattern="[0-9]*"
+    enterKeyHint="done"
+    autoComplete="off"
+    className="select-dark w-28 rounded-xl border border-neutral-700 bg-neutral-900 text-neutral-100 px-3 py-2 text-sm"
+    placeholder="Custom"
+    value={meta.minutesPerDay ? String(meta.minutesPerDay) : ""}
+    onChange={(e) => {
+      const n = parseIntSafe(e.target.value, 5, 180); // clamp 5–180
+      setMeta(m => ({ ...m, minutesPerDay: n ?? m.minutesPerDay ?? 30 }));
+    }}
+    onBlur={(e) => {
+      const n = parseIntSafe(e.target.value, 5, 180);
+      setMeta(m => ({ ...m, minutesPerDay: n ?? 30 }));
+    }}
+  />
+  <span className="text-sm text-neutral-400">min</span>
+</div>
             </div>
           </div>
 
