@@ -8,6 +8,8 @@ import { eventBus } from '../lib/eventBus'
 import { getActiveTarget } from '../services/targetsService'
 import { workoutStyleSuggestion } from '../services/coachSuggest'
 import { planWeek } from '../services/openaiService'
+import { createClient } from '@supabase/supabase-js';
+
 
 /* ──────────────────────────────────────────────────────────────────────────────
    TYPES
@@ -116,6 +118,84 @@ const parseIntSafe = (raw: string, min = 1, max = 999): number | undefined => {
   const n = Math.max(min, Math.min(max, parseInt(digits, 10)));
   return Number.isFinite(n) ? n : undefined;
 };
+
+
+
+function editDist(a: string, b: string) {
+  a = a.toLowerCase(); b = b.toLowerCase();
+  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+const EQUIP_CANONICAL = [
+  { key: 'bike',       words: ['assault bike','air bike','soft bike','spin bike','bike','cycle','cycling'] },
+  { key: 'treadmill',  words: ['treadmill','tread'] },
+  { key: 'rower',      words: ['rower','row machine','row','rowing','erg','concept2 rower'] },
+  { key: 'elliptical', words: ['elliptical','cross trainer','elyptical','eliptical','elipse','ellipse','elypse','elypsed'] },
+  { key: 'kb',         words: ['kettlebell','kettle bell','kb'] },
+  { key: 'db',         words: ['dumbbell','dumbbells','db'] },
+  { key: 'barbell',    words: ['barbell','bb'] },
+];
+
+function bestEquipmentSuggestion(raw: string) {
+  const s = (raw || '').toLowerCase().trim();
+  let best: {label: string, score: number} | null = null;
+  for (const c of EQUIP_CANONICAL) {
+    for (const w of c.words) {
+      const d = editDist(s, w.toLowerCase());
+      if (!best || d < best.score) best = { label: w, score: d };
+      if (s === w.toLowerCase()) return { label: w, score: 0 };
+    }
+  }
+  return best;  // may be null
+}
+
+
+
+async function saveUserEquipment(
+  supabase: any,
+  userId: string,
+  equipmentList: string[]
+): Promise<void> {
+  if (!supabase || !userId) return;
+
+  const arr = Array.isArray(equipmentList) ? equipmentList : [];
+
+  const norm = Array.from(
+    new Set(
+      arr
+        .map(s => String(s || '').trim().toLowerCase())
+        .map(s => {
+          if ([
+            'assault bike','air bike','soft bike','spin bike','echo bike','airdyne',
+            'a salt bike','assalt bike','assult bike'
+          ].includes(s)) {
+            return 'assault bike';
+          }
+          return s;
+        })
+        .filter(Boolean)
+    )
+  );
+
+  await supabase
+    .from('user_equipment')
+    .upsert(
+      { user_id: userId, equipment: norm, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    );
+}
+
+
+
 
 /* ── Equipment chips + parser ───────────────────────────────────────────────── */
 function uniqSorted(arr: number[]): number[] { return Array.from(new Set(arr)).sort((a,b)=>a-b) }
@@ -492,6 +572,7 @@ function WeeklyPlanSkeleton() {
 }
 
 
+
 function inferBlockTitle(text: string, fallback: string): string {
   const t = (text||'').toLowerCase();
   if (/\bamrap\b|as many reps/i.test(t)) return 'AMRAP';
@@ -501,6 +582,21 @@ function inferBlockTitle(text: string, fallback: string): string {
   if (/(back|front)?\s*squat|deadlift|bench|press|clean|snatch|row\s*@|db|kb|barbell|sets?\s*x\s*reps?/i.test(t)) return 'Strength';
   return fallback || 'Workout';
 }
+
+async function loadUserEquipment(supabase: any, userId: string): Promise<string[]> {
+  if (!supabase || !userId) return [];
+  const { data, error } = await supabase
+    .from('user_equipment')
+    .select('equipment')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) return [];
+  return (data?.equipment ?? []) as string[];
+}
+
+
+// === Equipment persistence helper (server) ===
+
 
 function suggestLoadRx(text: string): string | null {
   try {
@@ -567,18 +663,75 @@ export default function WeeklyWorkoutPlan() {
   }))
     const [coachStyle, setCoachStyle] =
     useState<{ header: string; bullets: string[] } | null>(null)
-
+  const [equipToast, setEquipToast] = React.useState<string | null>(null);
+  const [equipToastAction, setEquipToastAction] = React.useState<null | {label:string; onClick:() => void}>(null);
+  const [equipToastKind, setEquipToastKind] = React.useState<'info'|'error'>('info');
   const [week, setWeek] = useState<PlanDay[]>(() => loadLS<PlanDay[]>(LS_PLAN, []))
   const [loading, setLoading] = useState(false)
   const [equip, setEquip] = useState<EquipmentProfile>(() => loadEquipmentProfile())
   const [parseText, setParseText] = useState('')
   const [previewOpen, setPreviewOpen] = useState(false)
+  // --- Supabase client + user id ------------------------------------------------
+const supabase = React.useMemo(() => {
+  try {
+    return createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL as string,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string
+    );
+  } catch {
+    return null;
+  }
+}, []);
+
+const [userId, setUserId] = React.useState<string | null>(null);
+
   const [source, setSource] = useState<'AI API' | 'AI API (empty)'>('AI API')
   const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => { saveLS(LS_META, meta) }, [meta])
   useEffect(() => { saveLS(LS_PLAN, week) }, [week])
   useEffect(() => { saveEquipmentProfile(equip) }, [equip])
+
+  // Get the logged-in user id once (on mount)
+React.useEffect(() => {
+  if (!supabase) return;
+  (async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    setUserId(session?.user?.id ?? null);
+  })();
+}, [supabase]);
+
+// Load remote equipment once userId is known (merge with local)
+React.useEffect(() => {
+  if (!supabase || !userId) return;
+  (async () => {
+    const remote = await loadUserEquipment(supabase, userId);
+    if (remote.length) {
+      setMeta(m => {
+        const current = (m.equipment || []) as string[];
+        if (!current.length) return { ...m, equipment: remote };
+        const merged = Array.from(new Set([...current, ...remote]));
+        return { ...m, equipment: merged };
+      });
+      try { localStorage.setItem('tm:plannedWeek_equipment_extra', JSON.stringify(remote)); } catch {}
+    }
+  })();
+}, [supabase, userId]);
+
+// Debounced remote save whenever local chips change
+React.useEffect(() => {
+  if (!supabase || !userId) return;
+  const t = setTimeout(() => { saveUserEquipment(supabase, userId, meta.equipment || []); }, 600);
+  return () => clearTimeout(t);
+}, [supabase, userId, meta.equipment]);
+
+
+  // NEW: persist just the free-text equipment so TodayView can use it for suggestions
+useEffect(() => {
+  try {
+    localStorage.setItem('tm:plannedWeek_equipment_extra', JSON.stringify(meta.equipment || []));
+  } catch {}
+}, [meta.equipment]);
 
   // Suggest style/goal from Active Target
   useEffect(() => {
@@ -660,6 +813,48 @@ useEffect(() => {
       barbellMax: norm.barbellMax ?? equip.barbellMax
     })
   }
+  function editDist(a: string, b: string) {
+  a = a.toLowerCase(); b = b.toLowerCase();
+  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+const EQUIP_CANONICAL = [
+  { key: 'bike',       words: [ 'assault bike', 'air bike', 'soft bike', 'spin bike',
+  'echo bike', 'airdyne',
+  // common typos
+  'a salt bike', 'assalt bike', 'assult bike',
+  // generic
+  'bike', 'cycle', 'cycling'] },
+  { key: 'treadmill',  words: ['treadmill','tread'] },
+  { key: 'rower',      words: ['rower','row machine','row','rowing','erg','concept2 rower'] },
+  { key: 'elliptical', words: ['elliptical','cross trainer','elyptical','eliptical','elipse','ellipse','elypse','elypsed'] },
+  { key: 'kb',         words: ['kettlebell','kettle bell','kb'] },
+  { key: 'db',         words: ['dumbbell','dumbbells','db'] },
+  { key: 'barbell',    words: ['barbell','bb'] },
+];
+
+function bestEquipmentSuggestion(raw: string) {
+  const s = (raw || '').toLowerCase().trim();
+  let best: {label: string, score: number} | null = null;
+  for (const c of EQUIP_CANONICAL) {
+    for (const w of c.words) {
+      const d = editDist(s, w.toLowerCase());
+      if (!best || d < best.score) best = { label: w, score: d };
+      if (s === w.toLowerCase()) return { label: w, score: 0 };
+    }
+  }
+  return best;  // may be null
+}
+
 
   // API-ONLY generation
  async function onGenerate() {
@@ -685,13 +880,72 @@ useEffect(() => {
     setLoading(false);
   }
 }
+function addEquipmentFromInput() {
+  const raw = (tempEquipment || '').trim();
+  if (!raw) return;
+
+  const tokens = raw.split(',').map(s => s.trim()).filter(Boolean);
+
+  setMeta(m => {
+    const prev = (m.equipment || []) as string[];
+    const lowerPrev = new Set(prev.map(x => x.toLowerCase()));
+
+    const toAdd: string[] = [];
+    let firstUnk: string | null = null;
+    let firstSuggestion: string | null = null;
+
+    for (const t of tokens) {
+      const tl = t.toLowerCase();
+      if (lowerPrev.has(tl)) continue;
+
+      // bestEquipmentSuggestion() returns closest known string using a tiny edit distance
+      const best = bestEquipmentSuggestion(tl);
+      if (best && best.score <= 2) {
+        firstSuggestion = firstSuggestion || best.label; // show only once (to avoid spam)
+      } else {
+        firstUnk = firstUnk || t; // unknown – inform once
+      }
+      toAdd.push(tl);
+      lowerPrev.add(tl);
+    }
+
+    if (firstSuggestion) {
+      setEquipToastKind('info'); // keep blue/neutral
+      setEquipToast(`Did you mean “${firstSuggestion}”?`);
+      setEquipToastAction({
+        label: `Add ${firstSuggestion}`,
+        onClick: () => {
+          setMeta(mm => ({
+            ...mm,
+            equipment: Array.from(new Set([...(mm.equipment || []), firstSuggestion!.toLowerCase()])),
+          }));
+          setEquipToast(null); setEquipToastAction(null);
+        }
+      });
+    } else if (firstUnk) {
+  setEquipToastKind('error');
+  setEquipToast(`Not recognized: “${firstUnk}”. We’ll still generate a plan, but suggestions may not use it.`);
+  setEquipToastAction(null);
+  setTimeout(() => { setEquipToast(null); setEquipToastAction(null); }, 4000);
+
+}
+
+    return { ...m, equipment: Array.from(lowerPrev) };
+  });
+
+  setTempEquipment('');
+  // auto-hide toast after 6s
+  setTimeout(() => { setEquipToast(null); setEquipToastAction(null); }, 6000);
+}
 
 
 
+
+  const [tempEquipment, setTempEquipment] = React.useState<string>('');
   const [focusInput, setFocusInput] = React.useState('')
   const MAX_FOCUS = 10;
 
-  
+
   function addFocus() {
     const v = focusInput.trim().toLowerCase()
     if (!v) return
@@ -743,6 +997,27 @@ useEffect(() => {
 
   return (
     <div className="PlanRoot">
+
+       {/* Equipment recognition toast (non-blocking) */}
+    {equipToast && (
+  <div className="fixed left-1/2 top-4 z-50 -translate-x-1/2">
+    <div
+      className={`rounded-xl px-4 py-2 shadow-lg flex items-center gap-3
+        ${equipToastKind === 'error' ? 'bg-red-600 text-white' : 'bg-black/85 text-white'}`}
+    >
+      <span className="text-sm">{equipToast}</span>
+      {equipToastAction && (
+        <button
+          className="text-sm underline decoration-purple-300 underline-offset-4"
+          onClick={equipToastAction.onClick}
+        >
+          {equipToastAction.label}
+        </button>
+      )}
+    </div>
+  </div>
+)}
+
       <div className="Panel">
         <div className="PanelHeader">
           <Dumbbell className="mr-2" /> Weekly Workout Planner <span className="Source">• {source}</span>
@@ -788,66 +1063,45 @@ useEffect(() => {
             </div>
             <div className="Col">
               <label className="Label">Days / Week</label>
-              <div className="flex flex-wrap gap-2">
-                {[2,3,4,5,6,7,8,9,10].map(d => (
-                  <button
-                    key={d}
-                    type="button"
-                    onClick={() => setMeta(m => ({ ...m, daysPerWeek: d }))}
-                    className={`px-3 py-2 rounded-xl border text-sm
-                      ${meta.daysPerWeek === d
-                        ? "bg-purple-600 text-white border-purple-500"
-                        : "bg-neutral-900 text-neutral-100 border-neutral-700"}`}
-                    aria-pressed={meta.daysPerWeek === d}
-                  >
-                  {d}d
-                </button>
-                  ))}
-                </div>
-            </div>
-            <div className="Col">
-              <label className="Label">Minutes / Day</label>
-              <div className="flex flex-wrap gap-2 mb-2">
-  {[20,30,40,45,60,75,90].map(mins => (
-    <button
-      key={mins}
-      type="button"
-      onClick={() => setMeta(m => ({ ...m, minutesPerDay: mins }))}
-      className={`px-3 py-2 rounded-xl border text-sm
-        ${meta.minutesPerDay === mins
-          ? "bg-purple-600 text-white border-purple-500"
-          : "bg-neutral-900 text-neutral-100 border-neutral-700"}`}
-      aria-pressed={meta.minutesPerDay === mins}
-    >
-      {mins} min
-    </button>
-  ))}
-</div>
 
-<div className="flex items-center gap-3">
-  <input
-    // Use text + inputMode to get a numeric keypad without iOS's buggy <input type="number">
-    type="text"
-    inputMode="numeric"
-    pattern="[0-9]*"
-    enterKeyHint="done"
-    autoComplete="off"
-    className="select-dark w-28 rounded-xl border border-neutral-700 bg-neutral-900 text-neutral-100 px-3 py-2 text-sm"
-    placeholder="Custom"
-    value={meta.minutesPerDay ? String(meta.minutesPerDay) : ""}
-    onChange={(e) => {
-      const n = parseIntSafe(e.target.value, 5, 180); // clamp 5–180
-      setMeta(m => ({ ...m, minutesPerDay: n ?? m.minutesPerDay ?? 30 }));
-    }}
-    onBlur={(e) => {
-      const n = parseIntSafe(e.target.value, 5, 180);
-      setMeta(m => ({ ...m, minutesPerDay: n ?? 30 }));
-    }}
-  />
-  <span className="text-sm text-neutral-400">min</span>
-</div>
+              <select
+                className="Field select-dark bg-neutral-900 text-neutral-100 border border-neutral-700 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                value={meta.daysPerWeek}
+                onChange={(e) =>
+                  setMeta((m) => ({ ...m, daysPerWeek: Number(e.target.value) }))
+                }
+              >
+                {[2,3,4,5,6,7,8,9,10].map((d) => (
+                  <option key={d} value={d}>{d} days</option>
+                ))}
+              </select>
             </div>
+
+            <div className="Col">
+           <label className="Label">Minutes / Day</label>
+
+            <select
+              className="Field select-dark bg-neutral-900 text-neutral-100 border border-neutral-700 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              value={meta.minutesPerDay}
+              onChange={(e) =>
+                setMeta((m) => ({ ...m, minutesPerDay: Number(e.target.value) }))
+              }
+            >
+              {[20,30,40,45,60,75,90].map((mins) => (
+                <option key={mins} value={mins}>{mins} min</option>
+              ))}
+            </select>
           </div>
+        </div>
+          {/* Equipment */}
+<div className="Col col-span-2">
+  
+
+  {/* Chips list */}
+  
+
+  {/* Add equipment input */}
+ 
 
           {/* Focus Areas */}
           <div className="PanelSubhead"><CalendarDays className="mr-1" /> Focus Areas</div>
@@ -941,19 +1195,72 @@ useEffect(() => {
           </div>
 
           {/* Parser → chips */}
-          <details className="Parser">
-            <summary>Paste equipment text (optional) — auto-parse</summary>
-            <textarea
-              className="Field" rows={3}
-              placeholder="e.g., 10 lb, 20 lb, 30 lb DBs; 35 lb KB; 315 lb in plates"
-              value={parseText}
-              onChange={e => setParseText(e.target.value)}
-            />
-            <div className="Row">
-              <Btn onClick={parseAndImport}><ArrowLeftRight className="mr-1" /> Parse → Add chips</Btn>
-              <div className="LegacyNote">Legacy free-text kept (for API): {(meta.equipment||[]).join(', ') || '—'}</div>
-            </div>
-          </details>
+           {/* Equipment */}
+<div className="Col col-span-2">
+  <label className="Label">Add any extra equipment that you may have</label>
+
+  {/* Chips list */}
+  <div className="flex flex-wrap gap-2 mb-2">
+    {(meta.equipment || []).map((eq: string, idx: number) => (
+      <span
+        key={eq + idx}
+        className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900"
+      >
+        {eq}
+        <button
+          type="button"
+          aria-label={`Remove ${eq}`}
+          className="text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+          onClick={() =>
+            setMeta(m => ({
+              ...m,
+              equipment: (m.equipment || []).filter((x: string, i: number) => i !== idx),
+            }))
+          }
+        >
+          ×
+        </button>
+      </span>
+    ))}
+    {(!meta.equipment || meta.equipment.length === 0) && (
+      <span className="text-xs text-neutral-500">No equipment added yet.</span>
+    )}
+  </div>
+
+  {/* Add equipment input */}
+  <div className="flex items-center gap-2">
+    <input
+      type="text"
+      inputMode="text"
+      placeholder="e.g., soft bike, treadmill, rower, elliptical"
+      className="Field flex-1 bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700"
+      value={tempEquipment || ''}
+      onChange={(e) => setTempEquipment(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { addEquipmentFromInput(); }
+      }}
+    />
+    <button
+      type="button"
+      className="rounded-lg px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-700"
+      onClick={addEquipmentFromInput}
+    >
+      Add
+    </button>
+  </div>
+
+  {/* Optional hint: quickly add multiple by comma */}
+  <div className="mt-1 text-xs text-neutral-500">
+    Tip: add several at once with commas — e.g. <em>soft bike, treadmill, rower</em>
+  </div>
+</div>
+
+
+  {/* Optional hint: quickly add multiple by comma */}
+  <div className="mt-1 text-xs text-neutral-500">
+    Tip: add several at once with commas — e.g. <em>soft bike, treadmill, rower</em>
+  </div>
+</div>
         </div>
 
         {/* Actions (kept OUTSIDE so the button shows spinner) */}
@@ -1035,7 +1342,7 @@ useEffect(() => {
         )}
       </div>
 
-      <style>{`
+        <style>{`
 :root{
   --purple-500:#8b5cf6;
   --purple-600:#7c3aed;

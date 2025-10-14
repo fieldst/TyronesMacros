@@ -79,6 +79,11 @@ type DayRow = {
   totals?: { foodCals: number; workoutCals: number; allowance: number; remaining: number };
 };
 
+type EquipFlags = {
+  bike: boolean; treadmill: boolean; rower: boolean; elliptical: boolean;
+  kb: boolean; db: boolean; barbell: boolean;
+};
+
 // ---------- Greeting helpers ----------
 function resolveDisplayNameFromAuth(user: any): string {
   if (!user) return '';
@@ -185,6 +190,95 @@ function Chip({
       {label}
     </button>
   )
+}
+
+// small fuzzy distance (Levenshtein) – no deps
+function editDist(a: string, b: string) {
+  a = a.toLowerCase(); b = b.toLowerCase();
+  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+const EQUIP_CANONICAL = [
+  { key: 'bike',       words: ['assault bike','air bike','soft bike','spin bike','bike','cycle','cycling'] },
+  { key: 'treadmill',  words: ['treadmill','tread'] },
+  { key: 'rower',      words: ['rower','row machine','row','rowing','erg','concept2 rower'] },
+  { key: 'elliptical', words: ['elliptical','cross trainer','elyptical','eliptical','elipse','ellipse','elypse','elypsed'] },
+  { key: 'kb',         words: ['kettlebell','kettle bell','kb'] },
+  { key: 'db',         words: ['dumbbell','dumbbells','db'] },
+  { key: 'barbell',    words: ['barbell','bb'] },
+];
+
+function canonicalizeEquipment(list: string[] = []) {
+  const canonical: string[] = [];
+  const unknown: string[] = [];
+  for (const raw of list) {
+    const s = String(raw || '').trim().toLowerCase();
+    if (!s) continue;
+    let bestKey: string | null = null;
+    let bestWord: string | null = null;
+    let bestScore = Infinity;
+
+    for (const c of EQUIP_CANONICAL) {
+      for (const w of c.words) {
+        const d = editDist(s, w.toLowerCase());
+        if (d < bestScore) { bestScore = d; bestKey = c.key; bestWord = w; }
+        // quick exact/contains shortcut:
+        if (s === w.toLowerCase() || s.includes(w.toLowerCase()) || w.toLowerCase().includes(s)) {
+          bestScore = 0; bestKey = c.key; bestWord = w; break;
+        }
+      }
+      if (bestScore === 0) break;
+    }
+
+    if (bestKey && bestScore <= 2) {
+      canonical.push(bestKey);  // store canonical key for flags
+    } else {
+      unknown.push(raw);
+    }
+  }
+  return { canonical, unknown };
+}
+
+
+function flagsFromEquipment(list: string[] = []): EquipFlags {
+  const { canonical } = canonicalizeEquipment(list);
+  return {
+    bike: canonical.includes('bike'),
+    treadmill: canonical.includes('treadmill'),
+    rower: canonical.includes('rower'),
+    elliptical: canonical.includes('elliptical'),
+    kb: canonical.includes('kb'),
+    db: canonical.includes('db'),
+    barbell: canonical.includes('barbell'),
+  };
+}
+
+
+function buildEquipmentAwareCandidates(seedTitle: string, f: EquipFlags, minutes: number): string[] {
+  const out: string[] = [];
+  // Cardio machines
+  if (f.bike)       out.push(`${minutes} min bike intervals (hard/easy)`, `${minutes} min cycling moderate`);
+  if (f.treadmill)  out.push(`${minutes} min treadmill run (moderate)`, `${minutes} min incline walk brisk`);
+  if (f.rower)      out.push(`${minutes} min rowing steady`, `${minutes} min rowing intervals`);
+  if (f.elliptical) out.push(`${minutes} min elliptical steady`, `${minutes} min elliptical intervals`);
+  // Strength implements
+  if (f.kb) out.push(`${minutes} min kettlebell circuit`, `${minutes} min kb complex (swing/clean/press)`);
+  if (f.db) out.push(`${minutes} min dumbbell full-body`, `${minutes} min db upper/lower superset`);
+  if (f.barbell) out.push(`${minutes} min barbell compounds`, `${minutes} min push/pull barbell session`);
+  // Always include generic options
+  out.push(`${minutes} min bodyweight circuit`, `${minutes} min jog easy`);
+  // De-dupe
+  const seen = new Set<string>();
+  return out.filter(x => !seen.has(x) && seen.add(x));
 }
 
 function WorkoutQuickForm({
@@ -384,6 +478,8 @@ export default function TodayView({
 
   // Toast
   const [toast, setToast] = useState<string | null>(null);
+  const [toastKind, setToastKind] = React.useState<'info'|'error'|'success'>('info');
+
   const showToast = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3200); };
 
   // Quick Edit Targets
@@ -1304,28 +1400,67 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
   }
 
   async function suggestWorkoutForRow(seedTitle: string, rowId: string) {
-    if (!profile) return;
-    setBusy(true); setSuggestForId(rowId); setSuggestForTitle(seedTitle); setWoSuggestions([]); setSuggestOpen(true);
+  if (!profile) return;
+  setBusy(true);
+  setSuggestForId(rowId);
+  setSuggestForTitle(seedTitle);
+  setWoSuggestions([]);
+  setSuggestOpen(true);
+
+  try {
+    const base = seedTitle.toLowerCase();
+    const isCardio = /\b(run|jog|walk|row|cycle|bike|elliptical|stair|swim|treadmill|rowing|cycling|hike)\b/.test(base);
+    const isStrength = /\b(weight|lift|strength|push|pull|squat|deadlift|bench|press|clean|snatch|curl|lunge|row)\b/.test(base);
+
+    const durMatch = base.match(/(\d{2,3})\s*(?:min|mins|minute|minutes)/);
+    const minutes = durMatch ? Math.max(10, Math.min(120, parseInt(durMatch[1], 10))) : 30;
+
+    // Read extra equipment saved by WeeklyWorkoutPlan
+    let equipExtra: string[] = [];
     try {
-      const base = seedTitle.toLowerCase();
-      const isCardio = /\b(run|jog|walk|row|cycle|bike|elliptical|stair|swim|treadmill|rowing|cycling|hike)\b/.test(base);
-      const isStrength = /\b(weight|lift|strength|push|pull|squat|deadlift|bench|press|clean|snatch|curl|lunge|row)\b/.test(base);
-      const durMatch = base.match(/(\d{2,3})\s*(?:min|mins|minute|minutes)/);
-      const minutes = durMatch ? Math.max(10, Math.min(120, parseInt(durMatch[1], 10))) : 30;
-      const candidates = isCardio && !isStrength ? [
-        `${minutes} min brisk walk`, `${Math.round(minutes * 0.8)} min interval run (hard/easy)`,
-        `${minutes} min rowing steady`, `${minutes} min cycling moderate`,
-      ] : isStrength && !isCardio ? [
-        `${minutes} min full-body compound lifts`, `${minutes} min push/pull superset session`,
-        `${minutes} min strength training moderate`, `${minutes} min kettlebell circuit`,
-      ] : [
-        `${minutes} min jog easy-moderate`, `${minutes} min kettlebell circuit`, `${minutes} min weight training moderate`,
-      ];
-      const scored: Array<{ title: string; kcal: number }> = [];
-      for (const c of candidates) { try { scored.push({ title: c, kcal: await estimateWorkoutKcalSmart(c, profile) }); } catch {} }
-      setWoSuggestions(scored);
-    } finally { setBusy(false); }
+      const raw = localStorage.getItem('tm:plannedWeek_equipment_extra');
+      if (raw) equipExtra = JSON.parse(raw) as string[];
+    } catch {}
+
+    // Prefer equipment-aware candidates
+    const flags = flagsFromEquipment(equipExtra);
+    let candidates = buildEquipmentAwareCandidates(seedTitle, flags, minutes);
+
+    // If user listed gear but none recognized, alert + safe fallback
+    const anyListed = (equipExtra?.length ?? 0) > 0;
+    const anyRecognized = Object.values(flags).some(Boolean);
+    if (anyListed && !anyRecognized) {
+  setToastKind('error');
+  setToast("I couldn't match your listed equipment. Showing bodyweight/cardio alternatives for now.");
+  setTimeout(() => setToast(null), 4000);
+  candidates = [
+    `${minutes} min brisk walk`,
+    `${minutes} min bodyweight circuit`,
+    `${minutes} min jog easy`,
+  ];
+}
+
+
+    const scored: Array<{ title: string; kcal: number }> = [];
+    for (const c of candidates.slice(0, 6)) {
+      try {
+        const kcal = await estimateWorkoutKcalSmart(c, profile);
+        scored.push({ title: c, kcal });
+      } catch {}
+    }
+    setWoSuggestions(scored);
+  } catch (err) {
+    console.error('suggestWorkoutForRow error:', err);
+    alert("Couldn't build suggestions right now. Showing simple alternatives.");
+    setWoSuggestions([
+      { title: '30 min brisk walk', kcal: 0 },
+      { title: '20 min bodyweight circuit', kcal: 0 },
+    ]);
+  } finally {
+    setBusy(false);
   }
+}
+
   async function addSuggestedWorkout(title: string, kcal: number) {
     if (!userId || !dayId) return;
     setBusy(true);
@@ -1398,7 +1533,7 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
       {/* Toast */}
       {toast && (
         <div className="fixed left-1/2 top-4 -translate-x-1/2 z-50">
-          <div className="rounded-xl bg-black text-white dark:bg-white dark:text-black px-4 py-2 shadow-lg">{toast}</div>
+          <div className={`rounded-xl px-4 py-2 shadow-lg flex items-center gap-3 ${toastKind === 'error' ? 'bg-red-600' : 'bg-black/85'}`}>{toast}</div>
         </div>
       )}
 

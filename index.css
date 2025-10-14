@@ -147,3 +147,16 @@ input, textarea, select { font-size: 16px !important; }
   background-color: rgb(23 23 23);
   color: rgb(229 231 235);
 }
+/* Micro-interactions */
+.button-pop:active{transform:translateY(1px)}
+/* Dark mobile selects: force system to use dark form controls */
+.select-dark {
+  color-scheme: dark;
+}
+
+/* If you’re using Tailwind and want the dropdown chevron hidden:  */
+.select-dark {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
