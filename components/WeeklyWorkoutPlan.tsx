@@ -337,7 +337,7 @@ async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promis
       minutes:  normalizeNumber(meta.minutesPerDay, 40),
       days:     normalizeNumber(meta.daysPerWeek, 3),
       goal:     normalizeGoal(meta.goal),
-      style:    normalizeStyle(meta.style),
+      style:    effectiveStyle,
       intensity:  normalizeIntensity(meta.intensity),
       experience: normalizeExperience(meta.experience),
       focus:      (meta.focusAreas || []).map(toStr).filter(Boolean) as string[],
@@ -503,12 +503,43 @@ function suggestLoadRx(text: string): string | null {
     return null;
   } catch { return null; }
 }
+/* ── Map TargetsView styleCoach text → our internal Style ─────────────────── */
+function mapCoachTextToStyle(header: string, bullets: string[]): Style | null {
+  const h = (header || '').toLowerCase();
+  const all = (h + ' ' + (bullets || []).join(' ')).toLowerCase();
+
+  if (/\bppl|push[-\s]?pull[-\s]?legs|upper\/lower|powerbuilding|strength/.test(all)) return 'strength';
+  if (/\bfull[-\s]?body|3x|three times|three days/.test(all)) return 'conditioning';
+  if (/\bcrossfit|functional|metcon|wod/.test(all)) return 'crossfit';
+  if (/\bhiit|circuit|emom|interval|tabata/.test(all)) return 'circuit';
+  if (/\bbodyweight|calisthenic/.test(all)) return 'bodyweight';
+  if (/\bkettlebell|kb\b/.test(all)) return 'tabata';
+  if (/\bhybrid|strength\s*\+\s*endurance|run|bike|row/.test(all)) return 'hybrid';
+
+  return null;
+}
+
+/* ── Auto-style fallback based on equipment chips ─────────────────────────── */
+function autoStyleForEquipment(current: Style, eq: EquipmentProfile): Style {
+  const hasDB  = Array.isArray(eq.dumbbells) && eq.dumbbells.length > 0;
+  const hasKB  = Array.isArray(eq.kettlebells) && eq.kettlebells.length > 0;
+  const hasBAR = typeof eq.barbellMax === 'number' && eq.barbellMax > 0;
+
+  if (!hasDB && !hasKB && !hasBAR) return 'bodyweight'; // nothing → Bodyweight
+  if (!hasBAR && !hasDB && hasKB)  return 'tabata';     // KB-only → Kettlebell-centric
+  if (!hasBAR && hasDB && !hasKB)  return 'circuit';    // DB-only → Circuit
+  return current;
+}
+
 /* ── MAIN (API-only) ───────────────────────────────────────────────────────── */
 export default function WeeklyWorkoutPlan() {
   const [meta, setMeta] = useState<PlanMeta>(() => loadLS<PlanMeta>(LS_META, {
     goal: 'recomp', style: 'hybrid', experience: 'intermediate', intensity: 'moderate',
     daysPerWeek: 3, minutesPerDay: 40, focusAreas: [], equipment: [],
   }))
+    const [coachStyle, setCoachStyle] =
+    useState<{ header: string; bullets: string[] } | null>(null)
+
   const [week, setWeek] = useState<PlanDay[]>(() => loadLS<PlanDay[]>(LS_PLAN, []))
   const [loading, setLoading] = useState(false)
   const [equip, setEquip] = useState<EquipmentProfile>(() => loadEquipmentProfile())
@@ -536,6 +567,36 @@ export default function WeeklyWorkoutPlan() {
       setMeta(m => ({ ...m, style: (maybeStyle as Style) || m.style, goal: targGoal ?? m.goal }))
     })()
   }, [])
+
+  // Pull style from TargetsView cache (localStorage) if present, and map it
+useEffect(() => {
+  try {
+    const raw = localStorage.getItem('aiCoachTargetsSuggestion'); // same key saved in TargetsView
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const sc = parsed?.styleCoach || parsed?.workoutStyle; // be flexible with field name
+    if (sc && (sc.header || (sc.bullets || []).length)) {
+      const mapped = mapCoachTextToStyle(sc.header || '', sc.bullets || []);
+      if (mapped) setMeta(m => ({ ...m, style: mapped }));
+    }
+  } catch { /* ignore */ }
+}, []);
+
+
+useEffect(() => {
+  try {
+    const raw = localStorage.getItem('aiCoachTargetsSuggestion')
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    const sc = parsed?.styleCoach || parsed?.workoutStyle
+    if (sc && (sc.header || (sc.bullets || []).length)) {
+      setCoachStyle({
+        header: sc.header || '',
+        bullets: Array.isArray(sc.bullets) ? sc.bullets.slice(0, 3) : []
+      })
+    }
+  } catch { /* ignore */ }
+}, [])
 
   // Preview rows use structured equipment + intensity
   const previewRows = useMemo(() => {
@@ -577,6 +638,7 @@ export default function WeeklyWorkoutPlan() {
     setLoading(true)
     setNotice(null)
     try {
+      const effectiveStyle = autoStyleForEquipment(normalizeStyle(meta.style), equip);
       const apiWeek = await fetchPlanFromApi(meta, equip)
       if (apiWeek && apiWeek.length > 0) {
         setWeek(apiWeek)
@@ -651,6 +713,16 @@ export default function WeeklyWorkoutPlan() {
         <div className="PanelHeader">
           <Dumbbell className="mr-2" /> Weekly Workout Planner <span className="Source">• {source}</span>
         </div>
+        {/* AI Coach suggestion pill row (from Targets page cache) */}
+        {coachStyle && (
+          <div className="Row" style={{ marginTop: 6, marginBottom: 6 }}>
+            <span className="Pill">AI Coach: {coachStyle.header}</span>
+            {Array.isArray(coachStyle.bullets) && coachStyle.bullets.slice(0, 2).map((b, i) => (
+              <span key={i} className="Pill">{b}</span>
+            ))}
+          </div>
+        )}
+
 
         {/* Controls section (dim while loading) */}
         <div className={loading ? 'pointer-events-none opacity-70 transition' : 'transition'}>

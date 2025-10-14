@@ -1515,7 +1515,7 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
                 <option value="" disabled>Choose a saved meal…</option>
                 {savedMeals.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
-              <span className="text-xs text-neutral-500">Selecting will add it to today</span>
+              {/*<span className="text-xs text-neutral-500">Selecting will add it to today</span>*/}
             </div>
           </div>
         </div>

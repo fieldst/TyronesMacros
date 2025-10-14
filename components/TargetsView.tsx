@@ -104,15 +104,14 @@ export function localCoachSuggestion(params: {
   // choose sign for rate: gain => +, loss => -
   const sign = parsed.inferred === 'bulk' ? +1 : parsed.inferred === 'cut' ? -1 : 0;
 
-  // requested rate (lbs/wk), with safety caps
-  // fat loss: cap 0.25–1.25 lb/wk (most users), bulking cap 0.25–0.75 lb/wk
+  // requested rate (lbs/wk) with caps (keep your existing math intact)
   const capLoss = 1.25, capGain = 0.75;
   let rate = parsed.rateLbsPerWeek ?? (parsed.inferred === 'bulk' ? 0.35 : parsed.inferred === 'cut' ? 0.75 : 0.25);
   if (sign < 0) rate = Math.min(rate, capLoss);
   if (sign > 0) rate = Math.min(rate, capGain);
-  if (sign === 0) rate = 0.25; // gentle recomposition / lean
+  if (sign === 0) rate = 0.25;
 
-  // translate rate -> kcal delta, then clamp by % of TDEE too (±20%)
+  // translate rate -> kcal delta, then clamp by % of TDEE (±20%)
   let kcal = tdee + sign * kcalDeltaFromRate(rate);
   const maxDeficit = Math.round(tdee * 0.20);
   const maxSurplus = Math.round(tdee * 0.20);
@@ -121,15 +120,37 @@ export function localCoachSuggestion(params: {
 
   const macros = defaultMacros(kcal, params.weightLbs, parsed.inferred);
 
-  // dynamic “why” that echoes user text + method + safety
-  const direction = parsed.inferred === 'bulk' ? 'gain' :
-                    parsed.inferred === 'cut' ? 'lose' :
-                    parsed.inferred === 'recomp' ? 'recomp (build while trimming)' : 'maintain';
-  const method = `Method: ~${(sign!==0?rate:0.25)} lb/week ${direction}${
-      parsed.weeks ? ` over ~${parsed.weeks} weeks` : ''
-    } via ${sign<0?'deficit':'surplus'} ≈ ${Math.abs(kcal - tdee)} kcal/day; protein ${macros.protein_g}g; fats ~25% kcal; carbs fuel training.`;
-  const safety = `Safety: capped rate to protect performance, recovery, and injury risk; adjust weekly by bodyweight trend and gym performance.`;
-  const why = `You said: “${params.goalText || '—'}”. ${method} ${safety}`;
+  // ---------- NEW: concise, valuable rationale (no recap, no "safety") ----------
+  const dKcal = Math.abs(kcal - tdee);
+  const strategy =
+    parsed.inferred === 'bulk'
+      ? `Lean-bulk: small surplus (~${dKcal || 200} kcal/day) to build muscle without extra fat.`
+      : parsed.inferred === 'cut'
+      ? `Cut: small deficit (~${dKcal || 250} kcal/day) to drop fat while keeping training quality high.`
+      : parsed.inferred === 'recomp'
+      ? `Recomp: around maintenance to add muscle while trimming fat slowly.`
+      : `Performance: near maintenance for steady training and recovery.`;
+
+  const training =
+    parsed.inferred === 'bulk'
+      ? `Training: 5 days lifting (each muscle ~2×/week); short conditioning keeps fitness without slowing gains.`
+      : parsed.inferred === 'cut'
+      ? `Training: 3–4 days lifting to keep strength; 2–3 short HIIT/circuit sessions; one easy Zone-2.`
+      : `Training: 4 lifting days + 2 short conditioning sessions for balanced progress.`;
+
+  const why = [
+    `Why this target was chosen:\n`,
+    `• ${strategy}`,
+    `• Protein ~${macros.protein_g} g — rebuilds muscle and improves fullness.`,
+    `• Carbs ~${macros.carbs_g} g — fuel hard sessions and speed recovery.`,
+    `• Fats ~${macros.fat_g} g (~25–30% of ${kcal} kcal) — support hormones and joints.`,
+    `• ${training}`,
+    ``,
+    `What to do next:`,
+    `• Progress main lifts weekly (+2–5 lb or +1 rep).`,
+    `• Log meals; if weight trend stalls ~2 weeks, adjust ±100–150 kcal.`,
+  ].join('\n');
+  // ------------------------------------------------------------------------------
 
   return { kcal, ...macros, goal_label: parsed.inferred, why };
 }
@@ -196,35 +217,89 @@ function buildFiveDayMealPlan(macros: MacroSet, goal: InferredGoal): MealPlanDay
 }
 
 
-function workoutStyleSuggestion(opts: { goalText: string | null; inferred: InferredGoal }) {
-  const styles: Array<'classic'|'push-pull-legs'|'upper-lower'|'circuit'|'crossfit'> =
-    ['classic','upper-lower','push-pull-legs','circuit','crossfit'];
+function workoutStyleSuggestion(goal: string | null) {
+  let eq: any = {};
+  try { eq = JSON.parse(localStorage.getItem('equipmentProfile') || '{}'); } catch {}
+  const hasDB  = Array.isArray(eq?.dumbbells) && eq.dumbbells.length > 0;
+  const hasKB  = Array.isArray(eq?.kettlebells) && eq.kettlebells.length > 0;
+  const hasBAR = typeof eq?.barbellMax === 'number' && eq.barbellMax > 0;
 
-  const explain: Record<string,string> = {
-    classic: 'Organizes primary muscle groups to push hard and recover—great for steady hypertrophy.',
-    'upper-lower': 'Higher frequency on big lifts with balanced recovery.',
-    'push-pull-legs': 'Even volume across movement patterns; excellent for muscle gain.',
-    circuit: 'Time-efficient stations that keep HR up while touching multiple patterns—great for recomposition/cuts.',
-    crossfit: 'Mixed strength/conditioning/skill with varied stimuli for conditioning.',
-  };
+  const pack = (header: string, bullets: string[]) => ({ header, bullets });
 
-  let rec: string[] = [];
-  if (opts.inferred === 'bulk') rec = ['push-pull-legs','upper-lower'];
-  else if (opts.inferred === 'cut') rec = ['circuit','crossfit'];
-  else if (opts.inferred === 'recomp') rec = ['upper-lower','circuit'];
-  else rec = ['classic','upper-lower'];
+  if (goal === 'bulk') {
+    if (hasBAR) {
+      return pack('Powerbuilding (Strength + Hypertrophy)', [
+        'About 5 days per week. Start sessions with the big whole-body moves (like squats, deadlifts, presses).',
+        'Then lighter “muscle-builder” sets to add size in the right places.',
+        'Short 5–10 minute finishers once or twice a week to keep fitness without slowing gains.',
+      ]);
+    }
+    if (hasDB) {
+      return pack('Upper / Lower', [
+        '4 days per week: two upper-body days and two lower-body days.',
+        'Begin with your strongest moves, then add simple dumbbell work for size.',
+        'Optional quick finisher once a week.',
+      ]);
+    }
+    if (hasKB) {
+      return pack('Kettlebell-Centric', [
+        'Presses, squats, swings, and carries build strong shoulders, legs, and grip.',
+        'Use a heavier set for strength, then a lighter set for 8–12 reps to build muscle.',
+        'End with an easy 5–8 minute finisher.',
+      ]);
+    }
+    return pack('Bodyweight / Calisthenics', [
+      '3–5 days per week using push, pull, squat, and core moves.',
+      'Make it harder by slowing the lower phase or adding a rep each week.',
+      'Add short sprints once a week if you like.',
+    ]);
+  }
 
-  const header = opts.goalText
-    ? `Target: “${opts.goalText}”. We chose styles that best match this goal.`
-    : 'Recommended styles based on your goal and training balance.';
+  if (goal === 'cut') {
+    if (!hasBAR && hasKB && !hasDB) {
+      return pack('Kettlebell-Centric', [
+        'Short KB combinations (clean, press, squat, swing) raise your heart rate and burn calories.',
+        'Do 2–3 strength sets, then an 8–12 minute brisk finisher.',
+        'Add one easy steady cardio day (“you can talk while moving”).',
+      ]);
+    }
+    return pack('HIIT / Circuit', [
+      '3–4 short lifting days to keep strength, plus 2–3 quick circuits for calorie burn.',
+      'Finishers (6–12 minutes) get you sweaty fast without wrecking recovery.',
+      'Add one easy steady cardio day for base fitness.',
+    ]);
+  }
 
-  return {
-    header,
-    bullets: rec.map(k =>
-      `**${k === 'push-pull-legs' ? 'Push/Pull/Legs' : k === 'upper-lower' ? 'Upper/Lower' : k[0].toUpperCase()+k.slice(1)}** — ${explain[k]}`
-    ),
-  };
+  // recomp / default
+  if (goal === 'recomp' || !goal) {
+    if (!hasBAR && hasKB && !hasDB) {
+      return pack('Kettlebell-Centric', [
+        'Mix strength sets (5–8 reps) with “density” sets (8–12 reps).',
+        '2–3 KB sessions plus 1 short conditioning session per week.',
+        'Aim for a tiny improvement each week (weight, reps, or smoother form).',
+      ]);
+    }
+    if (!hasBAR && hasDB && !hasKB) {
+      return pack('HIIT / Circuit', [
+        'Dumbbell sessions that start with strength, then a short circuit.',
+        '4 lifting days + 1–2 short conditioning sessions.',
+        'Keep most sets at a “challenging but doable” effort.',
+      ]);
+    }
+    return pack('Hybrid (Strength + Endurance)', [
+        '4 lifting days + 2 cardio days (one short fast effort, one easy steady effort).',
+        'Start with the big moves, then simple assistance work for weak points.',
+        'Make small improvements each week; no need to max out daily.',
+    ]);
+  }
+
+  return pack('Hybrid (Strength + Endurance)', [
+    '4 lifting days + 2 short cardio sessions.',
+    'Big moves first; simple assistance second.',
+    'Track weight/reps and nudge them up gradually.',
+  ]);
 }
+
 
 // ------------------------------------------------------------------------
 
@@ -350,6 +425,8 @@ export default function TargetsView({
   /* ------------------------------------------------------------------ */
   /* Load/save profile (per-user)                                      */
   /* ------------------------------------------------------------------ */
+
+
   useEffect(() => {
     (async () => {
       const id = await getCurrentUserId();
@@ -405,6 +482,8 @@ export default function TargetsView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+
+
   async function saveProfile() {
     // Save per-user to Supabase
     if (userId) {
@@ -431,6 +510,20 @@ export default function TargetsView({
       localStorage.setItem(LS_PROFILE, JSON.stringify({ profile, pretext }));
     } catch { /* ignore */ }
   }
+
+  // Keep the AI Coach workout style visible after refresh/navigation
+useEffect(() => {
+  try {
+    const raw = localStorage.getItem('aiCoachTargetsSuggestion');
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const sc = parsed?.styleCoach || parsed?.workoutStyle; // support older field if present
+    if (sc && (sc.header || (sc.bullets || []).length)) {
+      setStyleCoach(sc);
+    }
+  } catch { /* ignore */ }
+}, []);
+
 
   /* ------------------------------------------------------------------ */
   /* API: one call for targets + meal plan + workout plan               */
@@ -490,40 +583,44 @@ async function fetchComboViaApi(p: Profile, t: string, seed?: MacroSet): Promise
   /* Cached helpers                                                     */
   /* ------------------------------------------------------------------ */
   function saveCache(payload: CachedSuggestion) {
-    try {
-      localStorage.setItem(LS_KEY, JSON.stringify(payload));
-      setHasCached(true);
-    } catch { /* ignore */ }
-  }
+  try {
+    const prev = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+    localStorage.setItem(LS_KEY, JSON.stringify({ ...prev, ...payload }));
+    setHasCached(true);
+  } catch { /* ignore */ }
+}
+
 
   function loadCacheAndOpen() {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const parsed: CachedSuggestion = JSON.parse(raw);
-      if (!parsed?.targets) return;
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return;
+    const parsed: CachedSuggestion = JSON.parse(raw);
+    if (!parsed?.targets) return;
 
-      setSuggested({
-        calories: Number(parsed.targets.calories || 0),
-        protein:  Number(parsed.targets.protein  || 0),
-        carbs:    Number(parsed.targets.carbs    || 0),
-        fat:      Number(parsed.targets.fat      || 0),
-      });
-      setLabel((parsed.label || '').toString().toUpperCase());
-      setRationale((parsed.rationale || '').toString());
-      setRationaleDetailed((parsed.rationale_detailed || '').toString());
-      setSuggestedAt(parsed.suggestedAtISO ? new Date(parsed.suggestedAtISO) : null);
-      setMealPlan(parsed.mealPlan || null);
-      setWorkoutPlan(parsed.workoutPlan || null);
+    setSuggested({
+      calories: Number(parsed.targets.calories || 0),
+      protein:  Number(parsed.targets.protein  || 0),
+      carbs:    Number(parsed.targets.carbs    || 0),
+      fat:      Number(parsed.targets.fat      || 0),
+    });
+    setLabel((parsed.label || '').toString().toUpperCase());
+    setRationale((parsed.rationale || '').toString());
+    setRationaleDetailed((parsed.rationale_detailed || '').toString());
+    setSuggestedAt(parsed.suggestedAtISO ? new Date(parsed.suggestedAtISO) : null);
+    setMealPlan(parsed.mealPlan || null);
+    setWorkoutPlan(parsed.workoutPlan || null);
+    setStyleCoach((parsed as any).styleCoach || (parsed as any).workoutStyle || null); // ← add this line
 
-      // Reset accordion defaults on open
-      setOpenTargetsAcc(true);
-      setOpenMealsAcc(false);
-      setOpenWorkoutAcc(false);
+    // Reset accordion defaults on open
+    setOpenTargetsAcc(true);
+    setOpenMealsAcc(false);
+    setOpenWorkoutAcc(false);
 
-      setOpen(true);
-    } catch { /* ignore */ }
-  }
+    setOpen(true);
+  } catch { /* ignore */ }
+}
+
 
   function clearCached() {
     try { localStorage.removeItem(LS_KEY); } catch {}
@@ -633,6 +730,7 @@ async function fetchComboViaApi(p: Profile, t: string, seed?: MacroSet): Promise
       suggestedAtISO: new Date().toISOString(),
       mealPlan: plan || undefined,
       // workoutPlan intentionally omitted (style rec instead)
+      styleCoach: style || undefined, 
     });
 
     // Open modal w/ default accordion states

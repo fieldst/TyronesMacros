@@ -119,56 +119,39 @@ function fatFloorPerLb(sex: 'male'|'female', goal: 'cut'|'maintain'|'recomp'|'bu
 
 function buildCoachingRationale(
   inp: SuggestTargetsInput,
-  out: { calories: number; protein: number; carbs: number; fat: number; },
+  out: { calories: number; protein: number; carbs: number; fat: number },
   parsed: ReturnType<typeof parseIntent>
 ) {
-  const { sex = 'male', age, heightIn, weightLbs, activity = 'sedentary' } = inp;
-  const { goal, delta, flags } = parsed;
+  const { goal, delta } = parsed;
+  const cal = Math.round(out.calories);
+  const p = Math.round(out.protein);
+  const c = Math.round(out.carbs);
+  const f = Math.round(out.fat);
+  const d = Math.abs(Math.round(delta || 0));
 
-  const lines: string[] = [];
+  const calLine =
+    goal === 'bulk'
+      ? `Calorie plan — a small extra ${d || 200} calories per day to help you build muscle without adding much fat.`
+      : goal === 'cut'
+      ? `Calorie plan — a small shortfall of ${d || 250} calories per day to lose fat while keeping your workouts strong.`
+      : goal === 'recomp'
+      ? `Calorie plan — about even with what you burn so you can add muscle slowly while trimming fat.`
+      : `Calorie plan — near even to keep your training and recovery steady.`;
 
-  // Opening line — personalized
-  const goalLabel =
-    goal === 'cut' ? 'leaner while keeping strength'
-    : goal === 'bulk' ? 'muscle gain with minimal fat'
-    : goal === 'recomp' ? 'body recomposition'
-    : 'performance and maintenance';
-  lines.push(`Plan set for **${goalLabel}** based on your profile (${sex}, ${age ?? '—'}y, ${heightIn ?? '—'}", ${weightLbs ?? '—'} lbs, ${activity}).`);
-
-  // Calorie logic
-  if (delta < 0) {
-    lines.push(`Calories are set ~${Math.abs(delta)} kcal **below** maintenance to pace fat loss without crushing energy.`);
-  } else if (delta > 0) {
-    lines.push(`Calories are ~${delta} kcal **above** maintenance to support training and lean gains.`);
-  } else {
-    lines.push(`Calories are set near **maintenance** to support training quality and recovery.`);
-  }
-
-  // Macro logic
-  lines.push(`Protein targets ~**${out.protein} g** (~${Math.round(out.protein / Math.max(weightLbs || 1, 1) * 100) / 100} g/lb) to protect muscle and manage appetite.`);
-  lines.push(`A minimum fat floor (~**${out.fat} g**) supports hormones and satiety; remaining calories go to **carbs** (~${out.carbs} g) for training fuel.`);
-
-  // Timing suggestions from flags
-  if (flags.morningWO) lines.push(`Since you train in the **morning**, consider a small pre-workout snack (e.g., banana + whey) and a solid post-workout meal to front-load carbs.`);
-  if (flags.eveningWO) lines.push(`With **evening** training, bias carbs later in the day (pre/post-workout) and eat a protein-forward dinner to aid recovery.`);
-  if (flags.strength) lines.push(`For **strength** days, try a 25–35 g protein feeding every 3–4 hours. Creatine (3–5 g/day) can help.`);
-  if (flags.endurance) lines.push(`For **endurance** sessions >60 min, add 30–60 g carbs/hour during training and keep electrolytes in check.`);
-  if (flags.steps) lines.push(`Keep the **steps** up — consistent NEAT is a secret weapon for body comp.`);
-
-  // Dietary constraints
-  if (flags.lactose) lines.push(`You mentioned **lactose** sensitivity — prefer lactose-free dairy, whey isolate, or dairy-free proteins (soy, pea, egg).`);
-  if (flags.gluten) lines.push(`Going **gluten-free**? Swap grains with rice, potatoes, corn tortillas, or certified GF oats.`);
-  if (flags.vegetarian && !flags.vegan) lines.push(`**Vegetarian**? Great protein staples: Greek yogurt, eggs, cottage cheese, tofu/tempeh, legumes, and whey/soy isolates.`);
-  if (flags.vegan) lines.push(`**Vegan** approach: lean on tofu/tempeh, seitan (if gluten-OK), lentils/beans, and soy/pea protein blends to hit your protein target.`);
-
-  // Travel & adherence
-  if (flags.travel) lines.push(`**Travel** tip: pack shelf-stable options (protein powder, jerky/soy jerky, nuts, instant oats) and aim for “1 protein + 1 produce” at airports/hotels.`);
-
-  // Close with simple action items
-  lines.push(`**Action today**: hit the protein target, spread meals across the day, and bias carbs around training. Log meals; we’ll adapt from your data.`);
-
-  return lines.join('\n');
+  return [
+    `Why these targets make sense:\n`,
+    `• ${calLine}`,
+    `• Protein ~${p} g — the raw material your body uses to repair and build muscle.`,
+    `• Carbs ~${c} g — your main workout fuel so sets feel strong and you recover faster.`,
+    `• Fats ~${f} g (~25–30% of ${cal} kcal) — support hormones, joints, and long-lasting energy.`,
+    ``,
+    `What to do next:`,
+    `• Try to lift a little more each week (add a tiny amount of weight or 1 extra rep).`,
+    `• Log meals; if your body weight hasn’t changed for ~2 weeks, nudge calories by 100–150 either way.`,
+  ].join('\n');
 }
+
+
 
 export async function suggestTargets(input: SuggestTargetsInput): Promise<SuggestTargetsResult> {
   const sex: 'male' | 'female' = (input.sex || 'male');
