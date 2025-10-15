@@ -8,7 +8,7 @@ import RateBanner from './components/RateBanner'
 import WeeklyWorkoutPlan from './components/WeeklyWorkoutPlan'
 import ThemeToggle from './components/ThemeToggle'
 
-import { getDisplayName, onAuthChange, signOut } from './auth'
+import { getDisplayName, onAuthChange, signOut, hardResetApp } from './auth'
 import { getDailyTargets, todayDateString } from './db'
 import { eventBus } from './lib/eventBus'
 import AuthModal from './components/AuthModal'
@@ -20,6 +20,12 @@ type Tab = 'today' | 'history' | 'targets' | 'plan'
 type MacroSet = { calories: number; protein: number; carbs: number; fat: number }
 
 export default function App() {
+  const handleSignOut = async () => {
+    try { await signOut(); } catch {}
+    try { localStorage.clear(); sessionStorage.clear(); } catch {}
+    try { eventBus.removeAll && eventBus.removeAll(); } catch {}
+    hardResetApp();
+  }
   const [tab, setTab] = useState<Tab>('today')
 
 // Auth UI
@@ -62,7 +68,13 @@ const openSignUp = () => {
     if (n) setAuthOpen(false)   // ⬅ close modal on successful sign-in/up
   }
   try {
-    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'SIGNED_OUT') {
+    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+      eventBus.emit('auth:changed', { event, userId: session?.user?.id ?? null })
+    } else if (event === 'SIGNED_OUT') {
+      try { localStorage.clear(); sessionStorage.clear(); } catch {}
+      try { eventBus.emit('auth:changed', { event, userId: null }); } catch {}
+      hardResetApp();
+    } else if (event) {
       eventBus.emit('auth:changed', { event, userId: session?.user?.id ?? null })
     }
   } catch {}
@@ -146,7 +158,7 @@ const openSignUp = () => {
             <ThemeToggle />
             {displayName ? (
               <button
-                onClick={() => signOut()}
+                onClick={handleSignOut}
                 className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-gray-700 dark:text-gray-100"
               >
                 Sign out

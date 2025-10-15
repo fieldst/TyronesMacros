@@ -56,3 +56,16 @@ export async function getDisplayName(): Promise<string | null> {
   const name = (u.user_metadata as any)?.full_name as string | undefined
   return (name?.trim() || u.email || null)
 }
+
+/** Hard reset: clear caches and reload app (use on SIGNED_OUT) */
+export function hardResetApp() {
+  try { localStorage.clear(); sessionStorage.clear(); } catch {}
+  try {
+    // Clear PWA caches if available
+    if ((window as any).caches && typeof caches.keys === 'function') {
+      caches.keys().then(keys => keys.forEach(k => caches.delete(k))).catch(()=>{});
+    }
+  } catch {}
+  // Navigate to origin to ensure a clean shell load
+  try { window.location.replace(window.location.origin); } catch { window.location.reload(); }
+}
