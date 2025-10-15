@@ -9,6 +9,7 @@ import { getActiveTarget } from '../services/targetsService'
 import { workoutStyleSuggestion } from '../services/coachSuggest'
 import { planWeek } from '../services/openaiService'
 import { createClient } from '@supabase/supabase-js';
+import { saveWorkoutPlan } from '../services/savedWorkoutsService';
 
 
 /* ──────────────────────────────────────────────────────────────────────────────
@@ -973,14 +974,26 @@ function addEquipmentFromInput() {
     const dateKey = day.date
 
     const items = (d.blocks || []).map((b, i) => ({
-      activity: `${d.title} — ${b.kind.charAt(0).toUpperCase() + b.kind.slice(1)}`,
-      minutes: b.minutes ?? null,
-      calories_burned: Math.max(0, Math.round((b.minutes || 10) * 7)),
-      intensity: (typeof meta?.intensity === 'string' ? meta.intensity : null),
-      source: 'plan',
-      order_index: i,
-      description: b.text,
-    }))
+  // ✅ put the real description in activity so TodayView’s expand shows it
+  activity:
+    (b?.text && String(b.text).trim()) ||
+    (b?.name && String(b.name).trim()) ||
+    (b?.kind ? b.kind.charAt(0).toUpperCase() + b.kind.slice(1) : "Workout"),
+
+  // keep minutes if present; null is fine for your insert helper
+  minutes: typeof b?.minutes === "number" ? b.minutes : null,
+
+  // keep your kcal fallback (7 kcal/min) so TodayView burn isn’t zero
+  calories_burned: Math.max(0, Math.round(((typeof b?.minutes === "number" ? b.minutes : 10) * 7))),
+
+  intensity: (typeof meta?.intensity === "string" ? meta.intensity : null),
+  source: "plan",
+  order_index: i,
+
+  // optional extra copy; harmless if your insert ignores it
+  description: b?.text || null,
+}));
+
 
     if (!items.length) { alert('No blocks to add for this day.'); return }
 
@@ -1135,10 +1148,14 @@ function addEquipmentFromInput() {
             <div className="EquipCol">
               <div className="Label">Dumbbells (lb)</div>
               <div className="ChipRow">
-                {equip.dumbbells.map(n =>
-                  <span key={`db-${n}`} className="Chip">{n} <button onClick={() => removeDB(n)}>×</button></span>
-                )}
-              </div>
+                  {equip.dumbbells.map((n) => (
+                    <span key={`db-${n}`} className="Chip" data-selected="true">
+                      {n}<span className="ChipUnit"> LB</span> <button onClick={() => removeDB(n)}>×</button>
+                    </span>
+                  ))}
+                </div>
+
+
               <div className="Row">
                 <input
                   type="number" min={5} max={150} step={5} placeholder="Add e.g. 50" className="Field"
@@ -1158,11 +1175,15 @@ function addEquipmentFromInput() {
             {/* Kettlebells */}
             <div className="EquipCol">
               <div className="Label">Kettlebells (lb)</div>
-              <div className="ChipRow">
-                {equip.kettlebells.map(n =>
-                  <span key={`kb-${n}`} className="Chip">{n} <button onClick={() => removeKB(n)}>×</button></span>
-                )}
-              </div>
+                <div className="ChipRow">
+                    {equip.kettlebells.map((n) => (
+                      <span key={`kb-${n}`} className="Chip" data-selected="true">
+                        {n}<span className="ChipUnit"> LB</span> <button onClick={() => removeKB(n)}>×</button>
+                      </span>
+                    ))}
+                  </div>
+
+
               <div className="Row">
                 <input
                   type="number" min={10} max={106} step={1} placeholder="Add e.g. 35" className="Field"
@@ -1336,6 +1357,7 @@ function addEquipmentFromInput() {
               <DayCard d={d} onHide={() => setWeek(w => w.filter((_,i) => i!==idx))} />
               <div className="CardActions">
                 <Btn onClick={() => addDayToToday(d)}><Copy className="mr-1" /> Add to Today</Btn>
+                <Btn onClick={async ()=>{ try { await saveWorkoutPlan(`Plan – ${d.title ?? d.id}`, d); } catch(e){} }}><Copy className="mr-1" /> Save</Btn>
               </div>
             </Card>
           ))
@@ -1464,6 +1486,77 @@ function addEquipmentFromInput() {
   background:rgba(139,92,246,0.12);padding:4px 10px;border-radius:999px;
   color:#4c1d95;border:1px solid rgba(139,92,246,0.25)
 }
+
+/* Selected equipment chips: make them stand out from the purple add buttons */
+/* Selected equipment chips: subtle, tidy, and distinct from purple add-buttons */
+.Chip[data-selected="true"]{
+  background:#e8fff5;
+  border-color:#86efac;
+  box-shadow: inset 0 0 0 1px rgba(16,185,129,.22);
+  color:#065f46 !important;
+  -webkit-text-fill-color:#065f46 !important;
+}
+.Chip[data-selected="true"] *{
+  color:#065f46 !important;
+  -webkit-text-fill-color:#065f46 !important;
+  opacity:1 !important;
+}
+
+/* Unit text for selected chips */
+.Chip[data-selected="true"] .ChipUnit{
+  margin-left: 4px;
+  font-size: .85em;
+  letter-spacing: .02em;
+  opacity: .8;
+  text-transform: uppercase; /* ensures LB stays upper */
+}
+
+/* Dark mode tweak (keeps contrast consistent) */
+@media (prefers-color-scheme: dark){
+  .Chip[data-selected="true"] .ChipUnit{
+    opacity: .9;
+  }
+}
+
+
+@media (prefers-color-scheme: dark){
+  .Chip[data-selected="true"]{
+    background:rgba(16,185,129,.18);
+    border-color:#047857;
+    box-shadow: inset 0 0 0 1px rgba(16,185,129,.28);
+    color:#d1fae5 !important;
+    -webkit-text-fill-color:#d1fae5 !important;
+  }
+  .Chip[data-selected="true"] *{
+    color:#d1fae5 !important;
+    -webkit-text-fill-color:#d1fae5 !important;
+  }
+}
+
+
+/* tiny check mark at the start (no SVGs, no layout shift) */
+.Chip[data-selected="true"]::before{
+  content:"✓";
+  font-weight:700;
+  margin-right:6px;
+  line-height:1;
+  opacity:.9;
+}
+
+/* Dark mode version */
+@media (prefers-color-scheme: dark){
+  .Chip[data-selected="true"]{
+    background:rgba(16,185,129,.18);
+    color:#d1fae5;                   /* emerald-100 text */
+    border-color:#047857;            /* emerald-700 */
+    box-shadow: inset 0 0 0 1px rgba(16,185,129,.28);
+  }
+  .Chip[data-selected="true"]::before{
+    opacity:.95;
+  }
+}
+
+
 @media (prefers-color-scheme: dark){
   .Chip{color:#d6bcfa;background:rgba(139,92,246,0.20);border-color:rgba(139,92,246,0.35)}
 }
@@ -1958,9 +2051,10 @@ html.dark .PlanRoot .Card .Block {
 }
 
   /* Ensure “pills” have high-contrast text on dark backgrounds */
-  .Pill, .Chip, .Badge, .btn-pill {
-    color: #ffffff !important;
-  }
+.Pill, .Badge, .btn-pill, .Chip:not([data-selected="true"]) {
+  color: #ffffff !important;
+}
+
 
   /* Make the workout cards and labels readable on mobile */
   @media (max-width: 640px) {
@@ -1971,6 +2065,56 @@ html.dark .PlanRoot .Card .Block {
       color: #c3c7cf !important;
     }
   }         
+/* === LIGHT MODE FIXES: force readable dark text on light backgrounds ====== */
+html:not(.dark) .PlanRoot,
+html:not(.dark) .PlanRoot * {
+  -webkit-text-fill-color: inherit; /* iOS: let text use the color we set below */
+}
+
+/* Selects: stop forcing dark theme in light mode */
+html:not(.dark) select,
+html:not(.dark) select.Field {
+  background-color: #ffffff !important;
+  color: #0b121a !important;
+  -webkit-text-fill-color: #0b121a !important; /* iOS Safari */
+  border-color: #d1d5db !important;            /* neutral-300 */
+}
+html:not(.dark) option {
+  color: #0b121a;
+  background: #ffffff;
+}
+
+/* Inputs / textareas */
+html:not(.dark) input.Field,
+html:not(.dark) textarea.Field {
+  background: #ffffff !important;
+  color: #0b121a !important;
+  border-color: #d1d5db !important;
+}
+html:not(.dark) .Field::placeholder {
+  color: rgba(0,0,0,0.55) !important;
+}
+
+/* Header text: remove gradient clipping in light for contrast */
+html:not(.dark) .PanelHeader {
+  background: none !important;
+  -webkit-background-clip: initial !important;
+  background-clip: initial !important;
+  -webkit-text-fill-color: #4c1d95 !important;
+  color: #4c1d95 !important; /* brand purple */
+}
+
+/* Ensure all the typical text bits render dark in light mode */
+html:not(.dark) .Label,
+html:not(.dark) .DayTitle,
+html:not(.dark) .DaySummary,
+html:not(.dark) .TileKind,
+html:not(.dark) .TileText,
+html:not(.dark) .Chip,
+html:not(.dark) .Pill,
+html:not(.dark) .TilePill {
+  color: #0b121a !important; /* near-black */
+}
 
 
 `}</style>

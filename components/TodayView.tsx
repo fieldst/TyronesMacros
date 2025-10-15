@@ -192,6 +192,9 @@ function Chip({
   )
 }
 
+
+
+
 // small fuzzy distance (Levenshtein) – no deps
 function editDist(a: string, b: string) {
   a = a.toLowerCase(); b = b.toLowerCase();
@@ -463,6 +466,36 @@ export default function TodayView({
   const [editWoKind, setEditWoKind] = useState<string>('');
   const [editWoKcal, setEditWoKcal] = useState<number>(0);
 
+  // --- compact workout summary helpers ---
+const truncate = (s: string, max = 70) => {
+  if (!s) return "Workout";
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const safe = cut.slice(0, cut.lastIndexOf(" "));
+  return (safe || cut).trim() + "…";
+};
+
+// Long green kcal pill used in header + details
+const KcalBadge = ({ value }: { value?: number }) => {
+  if (typeof value !== "number" || !isFinite(value) || value <= 0) return null;
+  return (
+    <span
+      className="inline-flex items-center justify-center text-xs font-medium
+                 px-3 py-0.5 rounded-full
+                 border-2 border-emerald-500/80 text-emerald-400
+                 bg-emerald-500/10
+                 min-w-[80px]"
+    >
+      {value} kcal
+    </span>
+  );
+};
+
+const [expandedWorkouts, setExpandedWorkouts] = useState<{ [id: string]: boolean }>({});
+const toggleWorkout = (id: string) =>
+  setExpandedWorkouts(prev => ({ ...prev, [id]: !prev[id] }));
+// --- end helpers/state ---
+
   
   function startEditWorkout(w: WorkoutRow) {
     setEditWoId(w.id);
@@ -557,6 +590,60 @@ const [fiveDayMeals, setFiveDayMeals] = useState<any[] | null>(null)
     try { localStorage.removeItem(LS_WEEK_PLAN); } catch {}
   }
 
+  // ---- helpers for workout label + titlecase ----
+const toTitle = (s: string) => (s ? s.slice(0, 1).toUpperCase() + s.slice(1) : s);
+
+const matchAny = (txt: string, needles: string[]) =>
+  needles.some((n) => txt.includes(n.toLowerCase()));
+
+/** Unifies titles for blocks coming from Saved Workouts AND Weekly Plan. */
+const deriveKindLabel = (w: any) => {
+  // In your rows, `w.kind` often contains the long sentence,
+  // so infer from that text; fall back to `w.activity`.
+  const txt = String(w?.kind || w?.activity || "").toLowerCase().trim();
+
+  // WOD styles first
+  if (matchAny(txt, ["emom"])) return "EMOM";
+  if (matchAny(txt, ["amrap"])) return "AMRAP";
+  if (matchAny(txt, ["tabata"])) return "Tabata";
+  if (matchAny(txt, ["metcon"])) return "Metcon";
+
+  // Intervals
+  if (matchAny(txt, ["interval", "intervals", "on/off", "work/rest"])) return "Intervals";
+
+  // Warmup heuristics (+ short blocks)
+  const minutes = typeof w?.minutes === "number" ? w.minutes : NaN;
+  if (
+    matchAny(txt, ["warm", "ramp up", "dynamic stretch", "light jog", "activation"]) ||
+    (Number.isFinite(minutes) && minutes > 0 && minutes <= 8)
+  ) return "Warmup";
+
+  if (matchAny(txt, ["cooldown", "cool down", "breathing", "box breathing", "easy walk", "easy jog"])) return "Cooldown";
+  if (matchAny(txt, ["mobility", "foam roll", "soft tissue"])) return "Mobility";
+  if (matchAny(txt, ["core", "abs", "plank", "hollow", "sit-up", "sit up"])) return "Core";
+  if (matchAny(txt, ["skill", "technique", "drill", "practice", "complex (technique)"])) return "Skill";
+  if (matchAny(txt, ["recovery", "restorative"])) return "Recovery";
+  if (matchAny(txt, ["finisher", "burnout", "cash-out", "cash out"])) return "Finisher";
+
+  if (matchAny(txt, [
+    "strength", "sets of", "5x5", "3x10", "squat", "deadlift", "bench",
+    "press", "rows", "pull-up", "pull up", "barbell", "dumbbell", "kettlebell"
+  ])) return "Strength";
+
+  if (matchAny(txt, [
+    "cardio", "run", "row", "bike", "cycle", "assault", "erg", "sprint", "zone 2", "treadmill"
+  ])) return "Cardio";
+
+  if (matchAny(txt, ["conditioning", "workout", "wod", "circuit"])) return "Conditioning";
+
+  return "Workout";
+};
+
+
+// --- end: robust kind labeling ---
+
+
+
   // Resolve display name (silent on missing table)
   useEffect(() => {
   const off = eventBus.on('workout:upsert', async () => {
@@ -646,6 +733,8 @@ useEffect(() => {
   carbs_g:   active?.carbs_g   ?? defaultMacros(kcal, weightLbs, inferred).carbs_g,
   fat_g:     active?.fat_g     ?? defaultMacros(kcal, weightLbs, inferred).fat_g,
 }
+
+
 
       
 
@@ -1694,23 +1783,90 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
 
         
         {/* Workouts list — mobile-first cards */}
-        <div className="mt-4 space-y-2">
-          <div className="px-1 text-sm font-semibold">Workouts</div>
-          {workouts.map((w) => (
-            <WorkoutCard
-              key={w.id}
-              item={{ id: w.id, title: w.kind, calories: w.calories }}
-              onEdit={() => startEditWorkout(w)}
-              onSuggest={() => suggestWorkoutForRow(w.kind, w.id)}
-              onRemove={() => removeWorkout(w.id)}
-            />
-          ))}
-          {workouts.length === 0 && (
-            <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 text-sm text-neutral-500 dark:text-neutral-400">
-              No workouts logged yet.
-            </div>
-          )}
-        </div>
+          <div className="mt-4 space-y-2">
+  {workouts.map((w) => (
+  <div key={w.id} className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3">
+    {/* clickable title with chevron */}
+    <div className="flex items-center justify-between gap-2 flex-wrap">
+  {/* clickable title + badges */}
+  <button
+    type="button"
+    onClick={() => toggleWorkout(w.id)}
+    aria-expanded={!!expandedWorkouts[w.id]}
+    className="group font-medium text-left inline-flex items-center gap-2
+               hover:underline focus:outline-none focus:ring-2 focus:ring-purple-500/60
+               rounded-lg px-1 flex-1 min-w-0"
+    title="View workout details"
+  >
+    <span
+      className={`inline-block transition-transform duration-200 select-none ${
+        expandedWorkouts[w.id] ? "rotate-90" : ""
+      }`}
+    >
+      ▶
+    </span>
+
+    {/* Title label (Warmup/Strength/Workout/Finisher...) */}
+    <span className="truncate">{deriveKindLabel(w)}</span>
+
+    {/* kcal pill (stays on one line, won’t push wrap) */}
+    <span className="shrink-0"><KcalBadge value={w.calories} /></span>
+  </button>
+
+  {/* actions (Suggest removed) */}
+  <div className="flex items-center gap-2 shrink-0">
+    <button
+      className="px-3 py-1 rounded-xl bg-neutral-200 dark:bg-neutral-800"
+      onClick={() => startEditWorkout(w)}
+    >
+      Edit
+    </button>
+    <button
+      className="px-3 py-1 rounded-xl bg-red-600 text-white"
+      onClick={() => removeWorkout(w.id)}
+    >
+      Remove
+    </button>
+  </div>
+</div>
+
+
+    {/* DESCRIPTION = full sentence when expanded */}
+    {expandedWorkouts[w.id] && (
+  <div className="mt-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 p-3">
+    <div className="text-sm whitespace-pre-wrap">
+      {(w.kind && w.kind.trim()) || (w.activity && w.activity.trim()) || "No details available"}
+    </div>
+    <div className="mt-2 flex flex-wrap gap-2 text-xs opacity-80">
+      {typeof w.minutes === "number" && (
+        <span className="inline-flex items-center justify-center text-xs font-medium
+                         px-3 py-0.5 rounded-full
+                         border-2 border-emerald-500/30 text-emerald-300
+                         bg-emerald-500/5 min-w-[80px]">
+          {w.minutes} min
+        </span>
+      )}
+      <KcalBadge value={w.calories ?? (w as any).calories_burned} />
+      {!!w.intensity && (
+        <span className="px-3 py-0.5 rounded-full border border-neutral-300 dark:border-neutral-700">
+          Intensity: {w.intensity}
+        </span>
+      )}
+      {!!w.source && (
+        <span className="px-3 py-0.5 rounded-full border border-neutral-300 dark:border-neutral-700">
+          Source: {w.source}
+        </span>
+      )}
+    </div>
+  </div>
+)}
+
+  </div>
+))}
+
+
+</div>
+
 {/* Coaching modal */}
         <Modal isOpen={coachOpen} onClose={() => setCoachOpen(false)} title="AI Coach Suggestions">
           <div>{coachText ? `• ${coachText}` : 'No suggestions.'}</div>
@@ -2100,27 +2256,24 @@ function MiniCard({ title, rows }: { title: string; rows: [string, string][] }) 
     </div>
   );
 }
-function Field({ label, value, onChange, suffix }: { label: string; value: number; onChange: (v: number) => void; suffix?: string; }) {
+function Field(
+  { label, value, onChange, suffix }: {
+    label: string; value: number; onChange: (v: number) => void; suffix?: string;
+  }
+) {
   return (
     <div>
-      <div className="text-xs text-neutral-500 mb-1">{label}{suffix ? ` (${suffix})` : ''}</div>
-      <input type="number" min={0} className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
-        value={Number.isFinite(value) ? value : 0} onChange={(e) => onChange(Number(e.target.value || 0))} />
-        <div className="mx-auto w/full max-w-screen-sm px-3 pb-24 pt-4">
-  …
-  {/* place it here, near the end of the container */}
-  <SummaryTray
-    remainingKcal={remainingCalories}
-    remainingProtein={remainingProtein}
-    remainingCarbs={remainingCarbs}
-    remainingFat={remainingFat}
-    onAdd={() => {
-      const el = document.getElementById('meal-input');
-      if (el) (el as HTMLTextAreaElement).focus();
-    }}
-  />
-</div>
-
+      <div className="text-xs text-neutral-500 mb-1">
+        {label}{suffix ? ` (${suffix})` : ""}
+      </div>
+      <input
+        type="number"
+        min={0}
+        className="w-full rounded-lg border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-900"
+        value={Number.isFinite(value) ? value : 0}
+        onChange={(e) => onChange(Number(e.target.value || 0))}
+      />
     </div>
   );
 }
+

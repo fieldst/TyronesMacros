@@ -36,6 +36,16 @@ html, body, #root {
 /* Improve touch responsiveness, prevent 300ms delay */
 * { touch-action: manipulation; }
 input, textarea, select { font-size: 16px !important; }
+html { -webkit-text-size-adjust: 100%; }
+/* Keep focused fields from hiding under the bottom nav */
+input:focus, textarea:focus, select:focus { scroll-margin-bottom: 96px; }
+
+/* Use dynamic viewport height to avoid 100vh jump on iOS bars */
+:root { --vh: 100dvh; }
+@supports not (height: 100dvh) {
+  :root { --vh: calc(100vh - 0px); }
+}
+
 
 /* ──────────────────────────────────────────────────────────────────────────────
    Reusable UI primitives

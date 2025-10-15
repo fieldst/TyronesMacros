@@ -7,8 +7,9 @@ import TargetsView from './components/TargetsView'
 import RateBanner from './components/RateBanner'
 import WeeklyWorkoutPlan from './components/WeeklyWorkoutPlan'
 import ThemeToggle from './components/ThemeToggle'
+import SavedWorkouts from './components/SavedWorkouts'
 
-import { getDisplayName, onAuthChange, signOut, hardResetApp } from './auth'
+import { getDisplayName, onAuthChange, signOut } from './auth'
 import { getDailyTargets, todayDateString } from './db'
 import { eventBus } from './lib/eventBus'
 import AuthModal from './components/AuthModal'
@@ -20,12 +21,6 @@ type Tab = 'today' | 'history' | 'targets' | 'plan'
 type MacroSet = { calories: number; protein: number; carbs: number; fat: number }
 
 export default function App() {
-  const handleSignOut = async () => {
-    try { await signOut(); } catch {}
-    try { localStorage.clear(); sessionStorage.clear(); } catch {}
-    try { eventBus.removeAll && eventBus.removeAll(); } catch {}
-    hardResetApp();
-  }
   const [tab, setTab] = useState<Tab>('today')
 
 // Auth UI
@@ -68,13 +63,7 @@ const openSignUp = () => {
     if (n) setAuthOpen(false)   // ⬅ close modal on successful sign-in/up
   }
   try {
-    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-      eventBus.emit('auth:changed', { event, userId: session?.user?.id ?? null })
-    } else if (event === 'SIGNED_OUT') {
-      try { localStorage.clear(); sessionStorage.clear(); } catch {}
-      try { eventBus.emit('auth:changed', { event, userId: null }); } catch {}
-      hardResetApp();
-    } else if (event) {
+    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'SIGNED_OUT') {
       eventBus.emit('auth:changed', { event, userId: session?.user?.id ?? null })
     }
   } catch {}
@@ -146,7 +135,8 @@ const openSignUp = () => {
   }
 
   return (
-    <div className="min-h-[100svh] flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50">
+    <div className="min-h-dvh flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50
+ flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50">
       {/* Header */}
       <header className="sticky top-0 z-40 border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur">
         <div className="mx-auto w-full max-w-[800px] px-4 h-14 flex items-center gap-3">
@@ -158,7 +148,7 @@ const openSignUp = () => {
             <ThemeToggle />
             {displayName ? (
               <button
-                onClick={handleSignOut}
+                onClick={() => signOut()}
                 className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-gray-700 dark:text-gray-100"
               >
                 Sign out
@@ -190,6 +180,7 @@ const openSignUp = () => {
           {tab === 'history' && <HistoryView />}
           {tab === 'targets' && <TargetsView />}
           {tab === 'plan' && <WeeklyWorkoutPlan />}
+          {tab === 'saved' && <SavedWorkouts />}
         </div>
 
         <RateBanner />
@@ -209,7 +200,7 @@ const openSignUp = () => {
         aria-label="Primary"
       >
 
-        <div className="mx-auto w-full max-w-[800px] grid grid-cols-4">
+        <div className="mx-auto w-full max-w-[800px] grid grid-cols-5">
           <button
             onClick={() => setTab('today')}
             role="tab"
@@ -257,6 +248,17 @@ const openSignUp = () => {
           >
             <span>Weekly Plan</span>
           </button>
+
+          <button
+            onClick={() => setTab('saved')}
+            role="tab"
+            aria-selected={tab === 'saved'}
+            aria-current={tab === 'saved' ? 'page' : undefined}
+            className={`h-14 px-4 flex flex-col items-center justify-center text-base focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--brand))] rounded-sm ${tab === 'saved' ? 'font-semibold text-[rgb(var(--brand))]' : 'opacity-70 hover:opacity-100'}`}
+          >
+            <span>Saved</span>
+          </button>
+
         </div>
 
       </nav>
