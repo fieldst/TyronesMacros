@@ -1820,40 +1820,80 @@ html.dark .PlanRoot .TilePill { color:#ffffff !important; }
 /* Your expanded "Show details" content lives inside .Card containers which
    have a light/paper background. Use dark text there for readability. */
 
-html.dark .PlanRoot .Card,
-html.dark .PlanRoot .Card * {
-  color:#0b121a !important;           /* near-black */
+/* === Dark mode: keep card text HIGH CONTRAST (white) ====================== */
+/* === Dark mode: do NOT hard-force card text; inherit from page = safe for light or dark cards */
+html.dark .PlanRoot {
+  color: #e6e7eb; /* page text in dark mode */
 }
 
-/* Headings inside the card (kill gradient/transparent & force dark) */
+/* Let cards inherit the page color so they work whether the card surface is light or dark */
+html.dark .PlanRoot .Card,
+html.dark .PlanRoot .Card * {
+  color: inherit !important;
+  -webkit-text-fill-color: inherit !important; /* iOS */
+}
+
+/* Headings in cards: remove gradient clipping; still inherit color */
+html.dark .PlanRoot .Card .BlockKind,
+html.dark .PlanRoot .Card .DayTitle,
+html.dark .PlanRoot .Card .PanelHeader {
+  background: none !important;
+  -webkit-background-clip: initial !important;
+  background-clip: initial !important;
+  -webkit-text-fill-color: inherit !important;
+  color: inherit !important;
+}
+
+/* Icons should follow the text color */
+html.dark .PlanRoot .Card svg {
+  stroke: currentColor !important;
+}
+
+/* Pills/chips keep contrast on dark pages but won’t break light cards */
+html.dark .PlanRoot .Card .Pill,
+html.dark .PlanRoot .Card .Chip,
+html.dark .PlanRoot .Card .TilePill {
+  color: inherit !important; /* text follows page color */
+  border-color: rgba(139,92,246,0.35) !important;
+  background: rgba(139,92,246,0.18) !important; /* subtle purple tint */
+}
+
+/* Dividers – subtle in dark mode */
+html.dark .PlanRoot .Card .Block {
+  border-top: 1px solid rgba(255,255,255,0.14) !important;
+}
+
+
+/* Headings inside the card (kill gradient transparency, keep white) */
 html.dark .PlanRoot .Card .BlockKind,
 html.dark .PlanRoot .Card .DayTitle,
 html.dark .PlanRoot .Card .PanelHeader {
   background:none !important;
   -webkit-background-clip:initial !important;
   background-clip:initial !important;
-  -webkit-text-fill-color:#0b121a !important;
-  color:#0b121a !important;
+  -webkit-text-fill-color:#ffffff !important;
+  color:#ffffff !important;
 }
 
 /* Icons inside the card */
 html.dark .PlanRoot .Card svg {
-  stroke:#0b121a !important;
+  stroke:#ffffff !important;
 }
 
-/* Pills/chips inside the card (keep your purple accents, dark text) */
+/* Pills/chips inside the card: keep purple backgrounds, white text */
 html.dark .PlanRoot .Card .Pill,
 html.dark .PlanRoot .Card .Chip,
 html.dark .PlanRoot .Card .TilePill {
-  color:#4c1d95 !important;                         /* brand purple text */
-  background:rgba(139,92,246,0.12) !important;
-  border-color:rgba(139,92,246,0.25) !important;
+  color:#ffffff !important;
+  background:rgba(139,92,246,0.22) !important;
+  border-color:rgba(139,92,246,0.35) !important;
 }
 
-/* Optional: light gray dividers already in your .Block — keep them subtle */
+/* Subtle divider is fine to keep */
 html.dark .PlanRoot .Card .Block {
-  border-top:1px solid rgba(17,24,39,0.12) !important;
+  border-top:1px solid rgba(255,255,255,0.14) !important;
 }
+
  @supports (-webkit-touch-callout: none) {
     .Field,
     input.Field,
@@ -1872,6 +1912,50 @@ html.dark .PlanRoot .Card .Block {
       opacity: 1 !important;
     }
   }
+
+/* === Weekly Plan: readable cards on iPhone (Dark Mode) ===================== */
+/* Make the card surface light and the text black ONLY in dark mode. */
+html.dark .PlanRoot .Card {
+  background: #f4f6fa !important;        /* light surface so black text pops */
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25) !important;
+}
+
+/* Force black text inside the card (titles, labels, content) */
+html.dark .PlanRoot .Card,
+html.dark .PlanRoot .Card * {
+  color: #0b121a !important;              /* near-black text */
+  -webkit-text-fill-color: #0b121a !important;  /* iOS Safari */
+}
+
+/* Headings that previously used gradient/transparent fill */
+html.dark .PlanRoot .Card .BlockKind,
+html.dark .PlanRoot .Card .DayTitle,
+html.dark .PlanRoot .Card .PanelHeader {
+  background: none !important;
+  -webkit-background-clip: initial !important;
+  background-clip: initial !important;
+  -webkit-text-fill-color: #0b121a !important;
+  color: #0b121a !important;
+}
+
+/* Icons follow text color */
+html.dark .PlanRoot .Card svg {
+  stroke: #0b121a !important;
+}
+
+/* Pills/chips inside the card: subtle purple tint with dark text */
+html.dark .PlanRoot .Card .Pill,
+html.dark .PlanRoot .Card .Chip,
+html.dark .PlanRoot .Card .TilePill {
+  color: #0b121a !important;                             /* dark text */
+  background: rgba(139,92,246,0.15) !important;          /* light purple */
+  border-color: rgba(139,92,246,0.30) !important;
+}
+
+/* Dividers inside card */
+html.dark .PlanRoot .Card .Block {
+  border-top: 1px solid rgba(17,24,39,0.12) !important;  /* subtle */
+}
 
   /* Ensure “pills” have high-contrast text on dark backgrounds */
   .Pill, .Chip, .Badge, .btn-pill {
