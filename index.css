@@ -28,10 +28,25 @@
   --muted: 150 150 170;
 }
 
+/* Lock layout to the large viewport so fixed elements don't jump on keyboard */
+html, body {
+  height: 100lvh;
+}
+
+@supports not (height: 100lvh) {
+  html, body { height: 100vh; }
+}
+
+/* Keep iOS safe-area happy; you already pad the nav, this just sets a token */
+:root { --safe-bottom: env(safe-area-inset-bottom); }
+
+
 /* Base surfaces */
 html, body, #root {
   background-color: rgb(var(--bg));
 }
+
+
 
 /* Improve touch responsiveness, prevent 300ms delay */
 * { touch-action: manipulation; }
