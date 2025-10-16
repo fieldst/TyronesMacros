@@ -102,7 +102,20 @@ const openSignUp = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateStr])
 
-  
+  // Keep bottom nav glued to the bottom when soft keyboards open
+  useEffect(() => {
+    const vv = (window as any).visualViewport
+    if (!vv) return
+
+    const update = () => {
+      const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
+      document.documentElement.style.setProperty('--kb-offset', `${overlap}px`)
+    }
+
+    update()
+    vv.addEventListener('resize', update)
+    return () => vv.removeEventListener('resize', update)
+  }, [])
 
   async function getDailyTargetsForToday(): Promise<MacroSet | null> {
     try {
@@ -122,9 +135,8 @@ const openSignUp = () => {
   }
 
   return (
-    <div className="min-h-[100lvh] flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50">
-
-
+    <div className="min-h-[100lvh] flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50
+ flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50">
       {/* Header */}
       <header className="sticky top-0 z-40 border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur">
         <div className="mx-auto w-full max-w-[800px] px-4 h-14 flex items-center gap-3">
@@ -178,9 +190,12 @@ const openSignUp = () => {
       <div style={{ height: 64 }} aria-hidden />
 
       {/* Fixed bottom navigation */}
-      <nav
-        className="fixed bottom-0 inset-x-0 z-40 border-t bg-white/95 dark:bg-zinc-950/95 backdrop-blur"
-        style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 8px)' }}
+      
+  <nav
+        className="fixed bottom-0 inset-x-0 z-40 border-t bg-white/95 dark:bg-zinc-950/95 backdrop-blur will-change-transform"
+        style={{
+          paddingBottom: 'max(env(safe-area-inset-bottom), 8px)',
+        }}
         role="tablist"
         aria-label="Primary"
       >
@@ -246,7 +261,9 @@ const openSignUp = () => {
 
         </div>
 
-      </nav>
+      </nav>,
+  document.body
+
             {/* Auth modal */}
     {/* Auth modal (tolerant to different prop APIs used in the zip) */}
      
