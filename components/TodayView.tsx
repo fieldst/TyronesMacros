@@ -38,6 +38,21 @@ type DaySnapshot = {
   totals: { foodCals: number; workoutCals: number; allowance: number; remaining: number } | null;
   updatedAt: number;
 };
+
+// --- normalize totals coming from DB/snapshot (snake_case -> camelCase) ---
+function normalizeTotals(t: any | null | undefined) {
+  if (!t) return t;
+  return {
+    foodCals:    Number(t.foodCals ?? t.food_cals ?? 0),
+    workoutCals: Number(t.workoutCals ?? t.workout_cals ?? 0),
+    allowance:   Number(t.allowance ?? t.allowance ?? 0),
+    remaining:   Number(t.remaining ?? t.remaining ?? 0),
+    protein:     Number(t.protein ?? t.protein ?? 0),
+    carbs:       Number(t.carbs ?? t.carbs ?? 0),
+    fat:         Number(t.fat ?? t.fat ?? 0),
+  };
+}
+
 function loadSnapshot(): DaySnapshot | null {
   try { return JSON.parse(localStorage.getItem(SNAP_KEY) || 'null'); } catch { return null; }
 }
@@ -441,15 +456,23 @@ export default function TodayView({
     if (raf.current != null) return;
     raf.current = requestAnimationFrame(() => {
       raf.current = null;
-      const t = pendingTotals.current; pendingTotals.current = null;
-      if (!t) return;
-      latestTotalsAt.current = Date.now();
-      setDay(prev => {
-        if (!prev) return prev;
-        const merged = { ...prev, totals: t };
-        saveSnapshot({ dayId: prev.id, date: prev.date, targets: prev.targets, totals: t, updatedAt: latestTotalsAt.current });
-        return merged;
-      });
+      const t = normalizeTotals(pendingTotals.current);
+pendingTotals.current = null;
+if (!t) return;
+
+latestTotalsAt.current = Date.now();
+setDay(prev => {
+  if (!prev) return prev;
+  const merged = { ...prev, totals: t };
+  saveSnapshot({
+    dayId: prev.id,
+    date: prev.date,
+    targets: prev.targets,
+    totals: t,
+    updatedAt: latestTotalsAt.current,
+  });
+  return merged;
+});
     });
   };
 
@@ -514,6 +537,39 @@ const toggleWorkout = (id: string) =>
   const [toastKind, setToastKind] = React.useState<'info'|'error'|'success'>('info');
 
   const showToast = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3200); };
+    // --- Weekly “retarget” reminder (toast; once per day, snoozable 7 days) ---
+  useEffect(() => {
+    if (!userId) return;
+
+    const todayKey = new Date().toISOString().slice(0,10);
+    const dailyKey = `retarget_nag_${todayKey}`;
+    const snoozeIso = localStorage.getItem('retarget_snooze_until') || '';
+    const snoozed = snoozeIso && new Date(snoozeIso) > new Date();
+
+    if (snoozed || localStorage.getItem(dailyKey)) return;
+
+    (async () => {
+      try {
+        const { data: prof } = await supabase
+          .from('user_profiles')
+          .select('last_retarget_at')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        const lastIso = (prof as any)?.last_retarget_at as (string | null | undefined);
+        const days = lastIso ? Math.floor((Date.now() - new Date(lastIso).getTime()) / 86_400_000) : 999;
+
+        if (days >= 7) {
+          // Use your built-in toast
+          showToast('Time to re-check your weight and retarget your macros.');
+          // Mark we’ve notified today
+          localStorage.setItem(dailyKey, '1');
+        }
+      } catch {
+        // ignore network errors (will try again another day)
+      }
+    })();
+  }, [userId]);
 
   // Quick Edit Targets
   const [quickOpen, setQuickOpen] = useState(false);
@@ -1024,7 +1080,12 @@ const [editFat, setEditFat] = useState<number | ''>('');
       const todayKey = localDateKey(); setDayKey(todayKey);
       const snap = loadSnapshot();
       if (snap && snap.date === todayKey && snap.dayId) {
-        setDay({ id: snap.dayId, date: snap.date, targets: snap.targets, totals: snap.totals } as any);
+        setDay({
+          id: snap.dayId,
+          date: snap.date,
+          targets: snap.targets,
+          totals: normalizeTotals(snap.totals), // normalization
+        } as any);
         setDayId(String(snap.dayId));
         latestTotalsAt.current = snap.updatedAt || 0;
         const t = snap.targets || {};
@@ -1226,8 +1287,13 @@ const line = typeof result === 'string'
   // Recalc broadcasts
   useEffect(() => {
     const onTotals = (payload: { dayId: string; totals: any }) => {
-      setDay(prev => (prev && prev.id === payload.dayId) ? { ...prev, totals: payload.totals } : prev);
-    };
+  setDay(prev =>
+    prev && prev.id === payload.dayId
+      ? { ...prev, totals: normalizeTotals(payload.totals) }
+      : prev
+  );
+};
+
     const unsubs = [
       eventBus.on('day:totals', onTotals),
       eventBus.on('meal:upsert', onTotals),
@@ -1349,8 +1415,16 @@ const line = typeof result === 'string'
       });
       await loadFoods(userId, dayKey);
       setMealText(''); setPreviewMeal(null);
-      const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-      if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+      const { data: d } = await supabase
+  .from('days')
+  .select('id, totals')
+  .eq('id', dayId)
+  .maybeSingle();
+
+if (d) {
+  setDay(prev => (prev ? { ...prev, totals: normalizeTotals((d as any).totals) } : prev));
+}
+
     } catch (e: any) {
       openCoaching(e?.message || 'Could not estimate/add meal.');
     } finally { setBusy(false); }
@@ -1457,7 +1531,7 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
     })
     await loadWorkouts(userId, dayKey)
     const { data: d } = await supabase.from('days').select('id, totals').eq('id', safeDayId).maybeSingle()
-    if (d) setDay(prev => (prev ? { ...prev, totals: (d as any).totals } : prev))
+    if (d) setDay(prev => (prev ? { ...prev, totals: normalizeTotals((d as any).totals) } : prev));
     setEditWoOpen(false)
     showToast(`Saved with AI-estimated ${aiKcal} kcal`)
   } finally {
@@ -1473,7 +1547,8 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
     await deleteWorkoutEntry({ id, userId, dayId });
     await loadWorkouts(userId, dayKey);
     const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-    if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+    if (d) setDay(prev => (prev ? { ...prev, totals: normalizeTotals((d as any).totals) } : prev));
+
   }
 
   async function suggestSwap() {
@@ -1648,7 +1723,11 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
   <SummaryPill
   variant="target"
   label="Current target"
-  value={`${day?.targets?.calories ?? currentGoal?.calories ?? macroTargets?.kcal ?? '—'} kcal`}
+  value={`${day?.targets?.calories
+  ?? (profile as any)?.current_target?.calories
+  ?? currentGoal?.calories
+  ?? macroTargets?.kcal
+  ?? '—'} kcal`}
 />
 
   <SummaryPill variant="exercise" label="Exercise added"   value={`${Math.round(day?.totals?.workoutCals ?? 0)} kcal`} />
