@@ -8,7 +8,6 @@ import { eventBus } from '../lib/eventBus'
 import { getActiveTarget } from '../services/targetsService'
 import { workoutStyleSuggestion } from '../services/coachSuggest'
 import { planWeek } from '../services/openaiService'
-import { supabase } from '../supabaseClient' // ADD (read-only select for last_weight)
 import { createClient } from '@supabase/supabase-js';
 import { saveWorkoutPlan } from '../services/savedWorkoutsService';
 
@@ -147,7 +146,18 @@ const EQUIP_CANONICAL = [
   { key: 'barbell',    words: ['barbell','bb'] },
 ];
 
-
+function bestEquipmentSuggestion(raw: string) {
+  const s = (raw || '').toLowerCase().trim();
+  let best: {label: string, score: number} | null = null;
+  for (const c of EQUIP_CANONICAL) {
+    for (const w of c.words) {
+      const d = editDist(s, w.toLowerCase());
+      if (!best || d < best.score) best = { label: w, score: d };
+      if (s === w.toLowerCase()) return { label: w, score: 0 };
+    }
+  }
+  return best;  // may be null
+}
 
 
 
@@ -420,35 +430,8 @@ function mapServerWeekToPlanDays(serverWeek: any[]): PlanDay[] {
 /* ── API call (AI path ONLY) ───────────────────────────────────────────────── */
 async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promise<PlanDay[] | null> {
   try {
-
-          // ADD: pull today’s target + last weight to inform AI load/rep choices
-    // Pull today’s target + last weight to inform AI load/rep choices
-const userId = await getCurrentUserId().catch(() => null)
-let planTarget: any = null
-let lastWeightKg: number | null = null
-
-if (userId) {
-  try {
-    const today = dateKeyChicago(new Date())
-    // Reuse your existing service to compute the active target for today
-    planTarget = await getActiveTarget(userId, today)
-  } catch {}
-
-  // READ-ONLY: one small profile query for last weight
-  try {
-    const { data: prof } = await supabase
-      .from('user_profiles')
-      .select('last_weight')
-      .eq('user_id', userId)
-      .maybeSingle()
-    if (prof?.last_weight != null) lastWeightKg = Number(prof.last_weight)
-  } catch {}
-}
-
-// ensure style is always present/normalized
-const effectiveStyle = autoStyleForEquipment(normalizeStyle(meta.style), equip);
-
-        
+    // ensure style is always present/normalized
+    const effectiveStyle = autoStyleForEquipment(normalizeStyle(meta.style), equip);
 
     const payload = {
       minutes: normalizeNumber(meta.minutesPerDay, 40, 5, 180),
@@ -459,9 +442,6 @@ const effectiveStyle = autoStyleForEquipment(normalizeStyle(meta.style), equip);
       experience: normalizeExperience(meta.experience),
       focus:      (meta.focusAreas || []).map(toStr).filter(Boolean) as string[],
       equipment:  toEquipmentArray(meta.equipment, equip),
-       // ADD (target-aware + weight-aware)
-      target: planTarget,
-      lastWeightKg,
     };
 
     // quick client-side sanity check
@@ -471,9 +451,6 @@ const effectiveStyle = autoStyleForEquipment(normalizeStyle(meta.style), equip);
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      
-
-
     });
 
     // ✅ important: treat 4xx/5xx as failure
@@ -1111,7 +1088,7 @@ function addEquipmentFromInput() {
                   <option key={d} value={d}>{d} days</option>
                 ))}
               </select>
-            </div> 
+            </div>
 
             <div className="Col">
            <label className="Label">Minutes / Day</label>
@@ -1165,7 +1142,7 @@ function addEquipmentFromInput() {
           </div>
 
           {/* Equipment chips (user-proof) */}
-          <div className="PanelSubhead"><Dumbbell className="mr-1" /> Equipment that you have access to.</div>
+          <div className="PanelSubhead"><Dumbbell className="mr-1" /> Equipment (chips)</div>
           <div className="EquipGrid">
             {/* Dumbbells */}
             <div className="EquipCol">
