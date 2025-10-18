@@ -793,6 +793,18 @@ async function fetchComboViaApi(p: Profile, t: string, seed?: MacroSet): Promise
           },
           { onConflict: 'user_id' }
         );
+              // Also persist to user profile so the target is sticky across sessions/days
+      await supabase
+        .from('user_profiles')
+        .upsert(
+          {
+            user_id: userId,
+            current_target: payload,                       // full target JSON (no shape changes)
+            last_retarget_at: new Date().toISOString(),   // stamp when user confirmed
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' }
+        );
 
       // Broadcast to TodayView
       try { await recalcAndPersistDay(userId!, localDateKey()); eventBus.emit('day:totals'); } catch {}

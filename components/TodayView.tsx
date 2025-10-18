@@ -537,6 +537,39 @@ const toggleWorkout = (id: string) =>
   const [toastKind, setToastKind] = React.useState<'info'|'error'|'success'>('info');
 
   const showToast = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3200); };
+
+      // --- Weekly “retarget” reminder (once per day; uses profile.last_retarget_at) ---
+  useEffect(() => {
+    if (!userId) return;
+
+    const todayKey = new Date().toISOString().slice(0,10);
+    const dailyKey = `retarget_nag_${todayKey}`;
+    const snoozeIso = localStorage.getItem('retarget_snooze_until') || '';
+    const snoozed = snoozeIso && new Date(snoozeIso) > new Date();
+
+    if (snoozed || localStorage.getItem(dailyKey)) return;
+
+    (async () => {
+      try {
+        const { data: prof } = await supabase
+          .from('user_profiles')
+          .select('last_retarget_at')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        const lastIso = (prof as any)?.last_retarget_at as (string | null | undefined);
+        const days = lastIso ? Math.floor((Date.now() - new Date(lastIso).getTime()) / 86_400_000) : 999;
+
+        if (days >= 7) {
+          showToast('Time to re-check your weight and retarget your macros.');
+          localStorage.setItem(dailyKey, '1'); // don’t nag more than once today
+        }
+      } catch {
+        // ignore network errors; will retry on next app open
+      }
+    })();
+  }, [userId]);
+
     // --- Weekly “retarget” reminder (toast; once per day, snoozable 7 days) ---
   useEffect(() => {
     if (!userId) return;

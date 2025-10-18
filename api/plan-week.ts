@@ -120,13 +120,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
     const system = `You are a pragmatic workout planner. Always return strict JSON; no markdown.`
+      // ADD: optional extra context from client for macros/weight + load rules
+  const extra = (() => {
+    try {
+      const t = (body as any)?.target
+      const lastW = (body as any)?.lastWeightKg
+      const lines: string[] = []
+
+      if (t && typeof t === 'object') {
+        const parts: string[] = []
+        if (t.calories != null) parts.push(`${t.calories} kcal`)
+        if (t.protein  != null) parts.push(`${t.protein} g protein`)
+        if (t.carbs    != null) parts.push(`${t.carbs} g carbs`)
+        if (t.fat      != null) parts.push(`${t.fat} g fat`)
+        const label = t.label ? ` (${String(t.label)})` : ''
+        lines.push(`User target${label}: ${parts.join(', ')}`)
+      }
+      if (lastW != null) {
+        const lb = Math.round(Number(lastW) * 2.20462)
+        lines.push(`User body weight: ${lb} lb`)
+      }
+      if (lines.length) {
+        lines.push('Assign loads using zones and output loads per exercise:')
+        lines.push('- Hypertrophy: 65–75% 1RM for 6–12 reps')
+        lines.push('- Recomp: 60–70% 1RM for 8–12 reps')
+        lines.push('- Fat-loss: 55–70% 1RM for 10–15 reps')
+        lines.push('If no 1RM, estimate via Epley; else use safe bodyweight heuristics and equipment caps.')
+      }
+      return lines.length ? ('\n' + lines.join('\n')) : ''
+    } catch { return '' }
+  })()
+
     const user = `Create a ${inp.days}-day ${inp.style} plan.
 - Goal: ${inp.goal}
 - Experience: ${inp.experience}
 - Intensity: ${inp.intensity}
 - Duration: ${inp.minutes} minutes/session
 ${equipmentText(inp.equipment)}
-
+${extra}
 Return ONLY a JSON object with this EXACT shape:
 {
   "week":[
