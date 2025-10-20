@@ -16,29 +16,25 @@ import AuthModal from './components/AuthModal'
 import './lib/legacyGlue'
 import Modal from './components/Modal'
 
-
 type Tab = 'today' | 'history' | 'targets' | 'plan'
 type MacroSet = { calories: number; protein: number; carbs: number; fat: number }
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('today')
 
-// Auth UI
-const [authOpen, setAuthOpen] = useState(false)
-const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up'>('sign-in')
-
-const openSignIn = () => {
-  setAuthMode('sign-in'); setAuthOpen(true);
-  try { eventBus.emit('auth:open', { mode: 'sign-in' }); } catch {}
-}
-const openSignUp = () => {
-  setAuthMode('sign-up'); setAuthOpen(true);
-  try { eventBus.emit('auth:open', { mode: 'sign-up' }); } catch {}
-}
-
-
-
   // Auth UI
+  const [authOpen, setAuthOpen] = useState(false)
+  const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up'>('sign-in')
+
+  const openSignIn = () => {
+    setAuthMode('sign-in'); setAuthOpen(true);
+    try { eventBus.emit('auth:open', { mode: 'sign-in' }); } catch {}
+  }
+  const openSignUp = () => {
+    setAuthMode('sign-up'); setAuthOpen(true);
+    try { eventBus.emit('auth:open', { mode: 'sign-up' }); } catch {}
+  }
+
   const [displayName, setDisplayName] = useState<string | null>(null)
 
   // Current Goal Targets for TODAY
@@ -52,15 +48,14 @@ const openSignUp = () => {
   const dateStr = todayDateString()
 
   useEffect(() => {
-  // Open the auth modal when other pages fire a global event
-  const off = eventBus.on<{ mode?: 'sign-in' | 'sign-up' }>('auth:open', (payload) => {
-    const mode = payload?.mode === 'sign-up' ? 'sign-up' : 'sign-in';
-    setAuthMode(mode);
-    setAuthOpen(true);
-  });
-  return () => off();
-}, []);
-
+    // Open auth modal when other pages fire a global event (client-only)
+    const off = eventBus.on<{ mode?: 'sign-in' | 'sign-up' }>('auth:open', (payload) => {
+      const mode = payload?.mode === 'sign-up' ? 'sign-up' : 'sign-in';
+      setAuthMode(mode);
+      setAuthOpen(true);
+    });
+    return () => off();
+  }, []);
 
   useEffect(() => {
     let mounted = true
@@ -70,18 +65,17 @@ const openSignUp = () => {
       if (mounted) setDisplayName(n)
     })
     const offAuth = onAuthChange(async (event?: any, session?: any) => {
-  const n = await getDisplayName()
-  if (mounted) {
-    setDisplayName(n)
-    if (n) setAuthOpen(false)   // ⬅ close modal on successful sign-in/up
-  }
-  try {
-    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'SIGNED_OUT') {
-      eventBus.emit('auth:changed', { event, userId: session?.user?.id ?? null })
-    }
-  } catch {}
-})
-
+      const n = await getDisplayName()
+      if (mounted) {
+        setDisplayName(n)
+        if (n) setAuthOpen(false)   // ⬅ close modal on successful sign-in/up
+      }
+      try {
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'SIGNED_OUT') {
+          eventBus.emit('auth:changed', { event, userId: session?.user?.id ?? null })
+        }
+      } catch {}
+    })
 
     // react to Targets tab saves/suggestions
     const offBus = eventBus.on<MacroSet>('targets:update', (payload) => {
@@ -115,17 +109,16 @@ const openSignUp = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateStr])
 
-  // Keep bottom nav glued to the bottom when soft keyboards open
+  // Keep bottom nav glued to the bottom when soft keyboards open (client only)
   useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
     const vv = (window as any).visualViewport
     if (!vv) return
 
     const update = () => {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-  document.documentElement.style.setProperty('--kb-offset', `${overlap}px`);
-}
-
+      const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty('--kb-offset', `${overlap}px`);
+    }
 
     update()
     vv.addEventListener('resize', update)
@@ -150,8 +143,7 @@ const openSignUp = () => {
   }
 
   return (
-    <div className="min-h-[100lvh] flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50
- flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50">
+    <div className="min-h-[100lvh] flex flex-col bg-white text-black dark:bg-zinc-950 dark:text-zinc-50">
       {/* Header */}
       <header className="sticky top-0 z-40 border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white/90 dark:bg-zinc-950/90 backdrop-blur">
         <div className="mx-auto w-full max-w-[800px] px-4 h-14 flex items-center gap-3">
@@ -170,13 +162,13 @@ const openSignUp = () => {
               </button>
             ) : (
               <div className="flex gap-2">
-  <button onClick={openSignIn} className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-gray-700 dark:text-gray-100">
-    Sign in
-  </button>
-  <button onClick={openSignUp} className="px-3 py-1 rounded-xl bg-gray-900 text-white dark:bg-gray-200 dark:text-gray-900">
-    Sign up
-  </button>
-</div>
+                <button onClick={openSignIn} className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-gray-700 dark:text-gray-100">
+                  Sign in
+                </button>
+                <button onClick={openSignUp} className="px-3 py-1 rounded-xl bg-gray-900 text-white dark:bg-gray-200 dark:text-gray-900">
+                  Sign up
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -205,16 +197,12 @@ const openSignUp = () => {
       <div style={{ height: 64 }} aria-hidden />
 
       {/* Fixed bottom navigation */}
-      
-  <nav
+      <nav
         className="fixed bottom-0 inset-x-0 z-40 border-t bg-white/95 dark:bg-zinc-950/95 backdrop-blur will-change-transform"
-        style={{
-          paddingBottom: 'max(env(safe-area-inset-bottom), 8px)',
-        }}
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 8px)' }}
         role="tablist"
         aria-label="Primary"
       >
-
         <div className="mx-auto w-full max-w-[800px] grid grid-cols-5">
           <button
             onClick={() => setTab('today')}
@@ -273,30 +261,21 @@ const openSignUp = () => {
           >
             <span>Saved</span>
           </button>
-
         </div>
-
       </nav>
-  
 
-            {/* Auth modal */}
-    {/* Auth modal (tolerant to different prop APIs used in the zip) */}
-     
-{/* Auth modal */}
-<Modal
-  isOpen={authOpen}
-  onClose={() => setAuthOpen(false)}
-  title={authMode === 'sign-in' ? 'Sign in' : 'Create account'}
-  size="sm"
->
-  <AuthModal
-    mode={authMode}
-    onSuccess={() => setAuthOpen(false)}
-  />
-</Modal>
-
-</div>
-
-
+      {/* Auth modal */}
+      <Modal
+        isOpen={authOpen}
+        onClose={() => setAuthOpen(false)}
+        title={authMode === 'sign-in' ? 'Sign in' : 'Create account'}
+        size="sm"
+      >
+        <AuthModal
+          mode={authMode}
+          onSuccess={() => setAuthOpen(false)}
+        />
+      </Modal>
+    </div>
   )
 }

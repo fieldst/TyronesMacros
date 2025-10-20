@@ -77,14 +77,21 @@ function uid() { return Math.random().toString(36).slice(2, 10) }
 /* ──────────────────────────────────────────────────────────────────────────────
    UTILS
    ────────────────────────────────────────────────────────────────────────────── */
-function saveLS<T>(key: string, v: T) { localStorage.setItem(key, JSON.stringify(v)) }
+function saveLS<T>(key: string, v: T) {
+  try { if (typeof window !== 'undefined') localStorage.setItem(key, JSON.stringify(v)) } catch {}
+}
 function loadLS<T>(key: string, fallback: T): T {
-  try { const s = localStorage.getItem(key); return s ? JSON.parse(s) as T : fallback } catch { return fallback }
+  try {
+    if (typeof window === 'undefined') return fallback as T;
+    const s = localStorage.getItem(key);
+    return s ? (JSON.parse(s) as T) : fallback;
+  } catch { return fallback }
 }
 
 type Move = { name: string; equip: 'barbell'|'dumbbell'|'kettlebell'|'cardio'|'bodyweight'; tags: string[] }
 
-const MOVES: Move[] = [
+/** Export to avoid noUnusedLocals build errors while keeping the dataset available */
+export const MOVES: Move[] = [
   { name: 'Back Squat', equip: 'barbell', tags: ['legs','squat','strength'] },
   { name: 'Front Squat', equip: 'barbell', tags: ['legs','squat','strength'] },
   { name: 'Deadlift', equip: 'barbell', tags: ['posterior','hinge','strength'] },
@@ -120,9 +127,7 @@ const parseIntSafe = (raw: string, min = 1, max = 999): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-
-
-function editDist(a: string, b: string) {
+export function editDist(a: string, b: string) {
   a = a.toLowerCase(); b = b.toLowerCase();
   const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
   for (let i = 0; i <= a.length; i++) dp[i][0] = i;
@@ -136,7 +141,7 @@ function editDist(a: string, b: string) {
   return dp[a.length][b.length];
 }
 
-const EQUIP_CANONICAL = [
+export const EQUIP_CANONICAL = [
   { key: 'bike',       words: ['assault bike','air bike','soft bike','spin bike','bike','cycle','cycling'] },
   { key: 'treadmill',  words: ['treadmill','tread'] },
   { key: 'rower',      words: ['rower','row machine','row','rowing','erg','concept2 rower'] },
@@ -146,7 +151,7 @@ const EQUIP_CANONICAL = [
   { key: 'barbell',    words: ['barbell','bb'] },
 ];
 
-function bestEquipmentSuggestion(raw: string) {
+export function bestEquipmentSuggestion(raw: string) {
   const s = (raw || '').toLowerCase().trim();
   let best: {label: string, score: number} | null = null;
   for (const c of EQUIP_CANONICAL) {
@@ -158,8 +163,6 @@ function bestEquipmentSuggestion(raw: string) {
   }
   return best;  // may be null
 }
-
-
 
 async function saveUserEquipment(
   supabase: any,
@@ -196,8 +199,6 @@ async function saveUserEquipment(
 }
 
 
-
-
 /* ── Equipment chips + parser ───────────────────────────────────────────────── */
 function uniqSorted(arr: number[]): number[] { return Array.from(new Set(arr)).sort((a,b)=>a-b) }
 function loadEquipmentProfile(): EquipmentProfile {
@@ -227,14 +228,6 @@ function normalizeEquipmentText(s: string): EquipmentProfile {
   }
   return { dumbbells: uniqSorted(dumbbells), kettlebells: uniqSorted(kettlebells), barbellMax }
 }
-
-// Only digits -> integer; clamps to [min,max]; empty -> undefined
-// const parseIntSafe = (raw: string, min = 1, max = 999): number | undefined => {
-//   const digits = raw.replace(/\D+/g, "");         // strip non-digits (iOS-safe)
-//   if (!digits) return undefined;
-//   const n = Math.max(min, Math.min(max, parseInt(digits, 10)));
-//   return Number.isFinite(n) ? n : undefined;
-// };
 
 
 /* ── Outbound payload normalizers (fix API errors) ──────────────────────────── */
@@ -434,8 +427,8 @@ async function fetchPlanFromApi(meta: PlanMeta, equip: EquipmentProfile): Promis
     const effectiveStyle = autoStyleForEquipment(normalizeStyle(meta.style), equip);
 
     const payload = {
-      minutes: normalizeNumber(meta.minutesPerDay, 40, 5, 180),
-      days:    normalizeNumber(meta.daysPerWeek, 3, 1, 10),
+      minutes: normalizeNumber(meta.minutesPerDay, 40),
+      days:    normalizeNumber(meta.daysPerWeek, 3),
       goal:       normalizeGoal(meta.goal),
       style:      effectiveStyle,
       intensity:  normalizeIntensity(meta.intensity),
@@ -662,7 +655,7 @@ export default function WeeklyWorkoutPlan() {
     goal: 'recomp', style: 'hybrid', experience: 'intermediate', intensity: 'moderate',
     daysPerWeek: 3, minutesPerDay: 40, focusAreas: [], equipment: [],
   }))
-    const [coachStyle, setCoachStyle] =
+  const [coachStyle, setCoachStyle] =
     useState<{ header: string; bullets: string[] } | null>(null)
   const [equipToast, setEquipToast] = React.useState<string | null>(null);
   const [equipToastAction, setEquipToastAction] = React.useState<null | {label:string; onClick:() => void}>(null);
@@ -673,18 +666,18 @@ export default function WeeklyWorkoutPlan() {
   const [parseText, setParseText] = useState('')
   const [previewOpen, setPreviewOpen] = useState(false)
   // --- Supabase client + user id ------------------------------------------------
-const supabase = React.useMemo(() => {
-  try {
-    return createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL as string,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string
-    );
-  } catch {
-    return null;
-  }
-}, []);
+  const supabase = React.useMemo(() => {
+    try {
+      return createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL as string,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string
+      );
+    } catch {
+      return null;
+    }
+  }, []);
 
-const [userId, setUserId] = React.useState<string | null>(null);
+  const [userId, setUserId] = React.useState<string | null>(null);
 
   const [source, setSource] = useState<'AI API' | 'AI API (empty)'>('AI API')
   const [notice, setNotice] = useState<string | null>(null)
@@ -693,51 +686,51 @@ const [userId, setUserId] = React.useState<string | null>(null);
   useEffect(() => { saveLS(LS_PLAN, week) }, [week])
   useEffect(() => { saveEquipmentProfile(equip) }, [equip])
   useEffect(() => {
-  (async () => {
-    try { setUserId(await getCurrentUserId()); } catch { setUserId(null); }
-  })();
-}, []);
+    (async () => {
+      try { setUserId(await getCurrentUserId()); } catch { setUserId(null); }
+    })();
+  }, []);
 
   // Get the logged-in user id once (on mount)
-React.useEffect(() => {
-  if (!supabase) return;
-  (async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    setUserId(session?.user?.id ?? null);
-  })();
-}, [supabase]);
+  React.useEffect(() => {
+    if (!supabase) return;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setUserId(session?.user?.id ?? null);
+    })();
+  }, [supabase]);
 
-// Load remote equipment once userId is known (merge with local)
-React.useEffect(() => {
-  if (!supabase || !userId) return;
-  (async () => {
-    const remote = await loadUserEquipment(supabase, userId);
-    if (remote.length) {
-      setMeta(m => {
-        const current = (m.equipment || []) as string[];
-        if (!current.length) return { ...m, equipment: remote };
-        const merged = Array.from(new Set([...current, ...remote]));
-        return { ...m, equipment: merged };
-      });
-      try { localStorage.setItem('tm:plannedWeek_equipment_extra', JSON.stringify(remote)); } catch {}
-    }
-  })();
-}, [supabase, userId]);
+  // Load remote equipment once userId is known (merge with local)
+  React.useEffect(() => {
+    if (!supabase || !userId) return;
+    (async () => {
+      const remote = await loadUserEquipment(supabase, userId);
+      if (remote.length) {
+        setMeta(m => {
+          const current = (m.equipment || []) as string[];
+          if (!current.length) return { ...m, equipment: remote };
+          const merged = Array.from(new Set([...current, ...remote]));
+          return { ...m, equipment: merged };
+        });
+        try { localStorage.setItem('tm:plannedWeek_equipment_extra', JSON.stringify(remote)); } catch {}
+      }
+    })();
+  }, [supabase, userId]);
 
-// Debounced remote save whenever local chips change
-React.useEffect(() => {
-  if (!supabase || !userId) return;
-  const t = setTimeout(() => { saveUserEquipment(supabase, userId, meta.equipment || []); }, 600);
-  return () => clearTimeout(t);
-}, [supabase, userId, meta.equipment]);
+  // Debounced remote save whenever local chips change
+  React.useEffect(() => {
+    if (!supabase || !userId) return;
+    const t = setTimeout(() => { saveUserEquipment(supabase, userId, meta.equipment || []); }, 600);
+    return () => clearTimeout(t);
+  }, [supabase, userId, meta.equipment]);
 
 
   // NEW: persist just the free-text equipment so TodayView can use it for suggestions
-useEffect(() => {
-  try {
-    localStorage.setItem('tm:plannedWeek_equipment_extra', JSON.stringify(meta.equipment || []));
-  } catch {}
-}, [meta.equipment]);
+  useEffect(() => {
+    try {
+      localStorage.setItem('tm:plannedWeek_equipment_extra', JSON.stringify(meta.equipment || []));
+    } catch {}
+  }, [meta.equipment]);
 
   // Suggest style/goal from Active Target
   useEffect(() => {
@@ -756,34 +749,34 @@ useEffect(() => {
   }, [])
 
   // Pull style from TargetsView cache (localStorage) if present, and map it
-useEffect(() => {
-  try {
-    const raw = localStorage.getItem('aiCoachTargetsSuggestion'); // same key saved in TargetsView
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    const sc = parsed?.styleCoach || parsed?.workoutStyle; // be flexible with field name
-    if (sc && (sc.header || (sc.bullets || []).length)) {
-      const mapped = mapCoachTextToStyle(sc.header || '', sc.bullets || []);
-      if (mapped) setMeta(m => ({ ...m, style: mapped }));
-    }
-  } catch { /* ignore */ }
-}, []);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('aiCoachTargetsSuggestion'); // same key saved in TargetsView
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const sc = parsed?.styleCoach || parsed?.workoutStyle; // be flexible with field name
+      if (sc && (sc.header || (sc.bullets || []).length)) {
+        const mapped = mapCoachTextToStyle(sc.header || '', sc.bullets || []);
+        if (mapped) setMeta(m => ({ ...m, style: mapped }));
+      }
+    } catch { /* ignore */ }
+  }, []);
 
 
-useEffect(() => {
-  try {
-    const raw = localStorage.getItem('aiCoachTargetsSuggestion')
-    if (!raw) return
-    const parsed = JSON.parse(raw)
-    const sc = parsed?.styleCoach || parsed?.workoutStyle
-    if (sc && (sc.header || (sc.bullets || []).length)) {
-      setCoachStyle({
-        header: sc.header || '',
-        bullets: Array.isArray(sc.bullets) ? sc.bullets.slice(0, 3) : []
-      })
-    }
-  } catch { /* ignore */ }
-}, [])
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('aiCoachTargetsSuggestion')
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      const sc = parsed?.styleCoach || parsed?.workoutStyle
+      if (sc && (sc.header || (sc.bullets || []).length)) {
+        setCoachStyle({
+          header: sc.header || '',
+          bullets: Array.isArray(sc.bullets) ? sc.bullets.slice(0, 3) : []
+        })
+      }
+    } catch { /* ignore */ }
+  }, [])
 
   // Preview rows use structured equipment + intensity
   const previewRows = useMemo(() => {
@@ -819,138 +812,95 @@ useEffect(() => {
       barbellMax: norm.barbellMax ?? equip.barbellMax
     })
   }
-  function editDist(a: string, b: string) {
-  a = a.toLowerCase(); b = b.toLowerCase();
-  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
-  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
-  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
-    }
-  }
-  return dp[a.length][b.length];
-}
 
-const EQUIP_CANONICAL = [
-  { key: 'bike',       words: [ 'assault bike', 'air bike', 'soft bike', 'spin bike',
-  'echo bike', 'airdyne',
-  // common typos
-  'a salt bike', 'assalt bike', 'assult bike',
-  // generic
-  'bike', 'cycle', 'cycling'] },
-  { key: 'treadmill',  words: ['treadmill','tread'] },
-  { key: 'rower',      words: ['rower','row machine','row','rowing','erg','concept2 rower'] },
-  { key: 'elliptical', words: ['elliptical','cross trainer','elyptical','eliptical','elipse','ellipse','elypse','elypsed'] },
-  { key: 'kb',         words: ['kettlebell','kettle bell','kb'] },
-  { key: 'db',         words: ['dumbbell','dumbbells','db'] },
-  { key: 'barbell',    words: ['barbell','bb'] },
-];
-
-function bestEquipmentSuggestion(raw: string) {
-  const s = (raw || '').toLowerCase().trim();
-  let best: {label: string, score: number} | null = null;
-  for (const c of EQUIP_CANONICAL) {
-    for (const w of c.words) {
-      const d = editDist(s, w.toLowerCase());
-      if (!best || d < best.score) best = { label: w, score: d };
-      if (s === w.toLowerCase()) return { label: w, score: 0 };
-    }
-  }
-  return best;  // may be null
-}
-
+  // Scoped (component) fuzzy matchers for free-text equipment input
+  function editDistLocal(a: string, b: string) { return editDist(a,b); }
+  const EQUIP_CANONICAL_LOCAL = EQUIP_CANONICAL;
+  function bestEquipmentSuggestionLocal(raw: string) { return bestEquipmentSuggestion(raw); }
 
   // API-ONLY generation
- async function onGenerate() {
-  try {
-    setLoading(true);
-    setNotice(null);
+  async function onGenerate() {
+    try {
+      setLoading(true);
+      setNotice(null);
 
-    const apiWeek = await fetchPlanFromApi(meta, equip);
+      const apiWeek = await fetchPlanFromApi(meta, equip);
 
-    if (!apiWeek || apiWeek.length === 0) {
-      setWeek([]);
-      setNotice(
-        "The AI API returned no workouts to render. Double-check: Goal, Style, Days/Week, Minutes/Day, and Equipment. If all fields look good, adjust the server formatter to always include at least one item in `main`."
-      );
-      return;
-    }
-
-    setWeek(apiWeek);
-  } catch (err) {
-    console.error("onGenerate error:", err);
-    setNotice("Could not generate plan. Please try again.");
-  } finally {
-    setLoading(false);
-  }
-}
-function addEquipmentFromInput() {
-  const raw = (tempEquipment || '').trim();
-  if (!raw) return;
-
-  const tokens = raw.split(',').map(s => s.trim()).filter(Boolean);
-
-  setMeta(m => {
-    const prev = (m.equipment || []) as string[];
-    const lowerPrev = new Set(prev.map(x => x.toLowerCase()));
-
-    const toAdd: string[] = [];
-    let firstUnk: string | null = null;
-    let firstSuggestion: string | null = null;
-
-    for (const t of tokens) {
-      const tl = t.toLowerCase();
-      if (lowerPrev.has(tl)) continue;
-
-      // bestEquipmentSuggestion() returns closest known string using a tiny edit distance
-      const best = bestEquipmentSuggestion(tl);
-      if (best && best.score <= 2) {
-        firstSuggestion = firstSuggestion || best.label; // show only once (to avoid spam)
-      } else {
-        firstUnk = firstUnk || t; // unknown – inform once
+      if (!apiWeek || apiWeek.length === 0) {
+        setWeek([]);
+        setNotice(
+          "The AI API returned no workouts to render. Double-check: Goal, Style, Days/Week, Minutes/Day, and Equipment. If all fields look good, adjust the server formatter to always include at least one item in `main`."
+        );
+        return;
       }
-      toAdd.push(tl);
-      lowerPrev.add(tl);
+
+      setWeek(apiWeek);
+    } catch (err) {
+      console.error("onGenerate error:", err);
+      setNotice("Could not generate plan. Please try again.");
+    } finally {
+      setLoading(false);
     }
+  }
 
-    if (firstSuggestion) {
-      setEquipToastKind('info'); // keep blue/neutral
-      setEquipToast(`Did you mean “${firstSuggestion}”?`);
-      setEquipToastAction({
-        label: `Add ${firstSuggestion}`,
-        onClick: () => {
-          setMeta(mm => ({
-            ...mm,
-            equipment: Array.from(new Set([...(mm.equipment || []), firstSuggestion!.toLowerCase()])),
-          }));
-          setEquipToast(null); setEquipToastAction(null);
+  function addEquipmentFromInput() {
+    const raw = (tempEquipment || '').trim();
+    if (!raw) return;
+
+    const tokens = raw.split(',').map(s => s.trim()).filter(Boolean);
+
+    setMeta(m => {
+      const prev = (m.equipment || []) as string[];
+      const lowerPrev = new Set(prev.map(x => x.toLowerCase()));
+
+      const toAdd: string[] = [];
+      let firstUnk: string | null = null;
+      let firstSuggestion: string | null = null;
+
+      for (const t of tokens) {
+        const tl = t.toLowerCase();
+        if (lowerPrev.has(tl)) continue;
+
+        const best = bestEquipmentSuggestionLocal(tl);
+        if (best && best.score <= 2) {
+          firstSuggestion = firstSuggestion || best.label; // show once
+        } else {
+          firstUnk = firstUnk || t;
         }
-      });
-    } else if (firstUnk) {
-  setEquipToastKind('error');
-  setEquipToast(`Not recognized: “${firstUnk}”. We’ll still generate a plan, but suggestions may not use it.`);
-  setEquipToastAction(null);
-  setTimeout(() => { setEquipToast(null); setEquipToastAction(null); }, 4000);
+        toAdd.push(tl);
+        lowerPrev.add(tl);
+      }
 
-}
+      if (firstSuggestion) {
+        setEquipToastKind('info');
+        setEquipToast(`Did you mean “${firstSuggestion}”?`);
+        setEquipToastAction({
+          label: `Add ${firstSuggestion}`,
+          onClick: () => {
+            setMeta(mm => ({
+              ...mm,
+              equipment: Array.from(new Set([...(mm.equipment || []), firstSuggestion!.toLowerCase()])),
+            }));
+            setEquipToast(null); setEquipToastAction(null);
+          }
+        });
+      } else if (firstUnk) {
+        setEquipToastKind('error');
+        setEquipToast(`Not recognized: “${firstUnk}”. We’ll still generate a plan, but suggestions may not use it.`);
+        setEquipToastAction(null);
+        setTimeout(() => { setEquipToast(null); setEquipToastAction(null); }, 4000);
+      }
 
-    return { ...m, equipment: Array.from(lowerPrev) };
-  });
+      return { ...m, equipment: Array.from(lowerPrev) };
+    });
 
-  setTempEquipment('');
-  // auto-hide toast after 6s
-  setTimeout(() => { setEquipToast(null); setEquipToastAction(null); }, 6000);
-}
-
-
-
+    setTempEquipment('');
+    setTimeout(() => { setEquipToast(null); setEquipToastAction(null); }, 6000);
+  }
 
   const [tempEquipment, setTempEquipment] = React.useState<string>('');
   const [focusInput, setFocusInput] = React.useState('')
   const MAX_FOCUS = 10;
-
 
   function addFocus() {
     const v = focusInput.trim().toLowerCase()
@@ -979,26 +929,17 @@ function addEquipmentFromInput() {
     const dateKey = day.date
 
     const items = (d.blocks || []).map((b, i) => ({
-  // ✅ put the real description in activity so TodayView’s expand shows it
-  activity:
-    (b?.text && String(b.text).trim()) ||
-    (b?.name && String(b.name).trim()) ||
-    (b?.kind ? b.kind.charAt(0).toUpperCase() + b.kind.slice(1) : "Workout"),
-
-  // keep minutes if present; null is fine for your insert helper
-  minutes: typeof b?.minutes === "number" ? b.minutes : null,
-
-  // keep your kcal fallback (7 kcal/min) so TodayView burn isn’t zero
-  calories_burned: Math.max(0, Math.round(((typeof b?.minutes === "number" ? b.minutes : 10) * 7))),
-
-  intensity: (typeof meta?.intensity === "string" ? meta.intensity : null),
-  source: "plan",
-  order_index: i,
-
-  // optional extra copy; harmless if your insert ignores it
-  description: b?.text || null,
-}));
-
+      activity:
+        (b?.text && String(b.text).trim()) ||
+        (b?.name && String(b.name).trim()) ||
+        (b?.kind ? b.kind.charAt(0).toUpperCase() + b.kind.slice(1) : "Workout"),
+      minutes: typeof b?.minutes === "number" ? b.minutes : null,
+      calories_burned: Math.max(0, Math.round(((typeof b?.minutes === "number" ? b.minutes : 10) * 7))),
+      intensity: (typeof meta?.intensity === "string" ? meta.intensity : null),
+      source: "plan",
+      order_index: i,
+      description: b?.text || null,
+    }));
 
     if (!items.length) { alert('No blocks to add for this day.'); return }
 
@@ -1012,64 +953,62 @@ function addEquipmentFromInput() {
     eventBus.emit('day:totals', { date: dateKey })
     alert('Added to Today.')
   }
+
   // 🚫 Require login: block this page when logged out
-// 🚫 Require login: block this page when logged out
-if (!userId) {
-  return (
-    <div className="min-h-[100svh] w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
-      <div className="mx-auto w-full max-w-md px-4 py-6">
-        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4">
-          <div className="text-lg font-semibold mb-1">Please sign in</div>
-          <div className="text-sm text-neutral-500 dark:text-neutral-400">
-            Weekly Plan is available for logged-in users. It’s totally free.
+  if (!userId) {
+    return (
+      <div className="min-h-[100svh] w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+        <div className="mx-auto w-full max-w-md px-4 py-6">
+          <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4">
+            <div className="text-lg font-semibold mb-1">Please sign in</div>
+            <div className="text-sm text-neutral-500 dark:text-neutral-400">
+              Weekly Plan is available for logged-in users. It’s totally free.
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => eventBus.emit('auth:open', { mode: 'sign-in' })}
+                className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black"
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                onClick={() => eventBus.emit('auth:open', { mode: 'sign-up' })}
+                className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
+              >
+                Create a free account
+              </button>
+            </div>
           </div>
-          <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              onClick={() => eventBus.emit('auth:open', { mode: 'sign-in' })}
-              className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black"
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              onClick={() => eventBus.emit('auth:open', { mode: 'sign-up' })}
-              className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
-            >
-              Create a free account
-            </button>
-          </div>
-
-
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
 
   return (
     <div className="PlanRoot">
 
-       {/* Equipment recognition toast (non-blocking) */}
-    {equipToast && (
-  <div className="fixed left-1/2 top-4 z-50 -translate-x-1/2">
-    <div
-      className={`rounded-xl px-4 py-2 shadow-lg flex items-center gap-3
+      {/* Equipment recognition toast (non-blocking) */}
+      {equipToast && (
+        <div className="fixed left-1/2 top-4 z-50 -translate-x-1/2">
+          <div
+            className={`rounded-xl px-4 py-2 shadow-lg flex items-center gap-3
         ${equipToastKind === 'error' ? 'bg-red-600 text-white' : 'bg-black/85 text-white'}`}
-    >
-      <span className="text-sm">{equipToast}</span>
-      {equipToastAction && (
-        <button
-          className="text-sm underline decoration-purple-300 underline-offset-4"
-          onClick={equipToastAction.onClick}
-        >
-          {equipToastAction.label}
-        </button>
+          >
+            <span className="text-sm">{equipToast}</span>
+            {equipToastAction && (
+              <button
+                className="text-sm underline decoration-purple-300 underline-offset-4"
+                onClick={equipToastAction.onClick}
+              >
+                {equipToastAction.label}
+              </button>
+            )}
+          </div>
+        </div>
       )}
-    </div>
-  </div>
-)}
 
       <div className="Panel">
         <div className="PanelHeader">
@@ -1131,30 +1070,21 @@ if (!userId) {
             </div>
 
             <div className="Col">
-           <label className="Label">Minutes / Day</label>
+              <label className="Label">Minutes / Day</label>
 
-            <select
-              className="Field select-dark bg-neutral-900 text-neutral-100 border border-neutral-700 focus:outline-none focus:ring-2 focus:ring-purple-500"
-              value={meta.minutesPerDay}
-              onChange={(e) =>
-                setMeta((m) => ({ ...m, minutesPerDay: Number(e.target.value) }))
-              }
-            >
-              {[20,30,40,45,60,75,90].map((mins) => (
-                <option key={mins} value={mins}>{mins} min</option>
-              ))}
-            </select>
+              <select
+                className="Field select-dark bg-neutral-900 text-neutral-100 border border-neutral-700 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                value={meta.minutesPerDay}
+                onChange={(e) =>
+                  setMeta((m) => ({ ...m, minutesPerDay: Number(e.target.value) }))
+                }
+              >
+                {[20,30,40,45,60,75,90].map((mins) => (
+                  <option key={mins} value={mins}>{mins} min</option>
+                ))}
+              </select>
+            </div>
           </div>
-        </div>
-          {/* Equipment */}
-<div className="Col col-span-2">
-  
-
-  {/* Chips list */}
-  
-
-  {/* Add equipment input */}
- 
 
           {/* Focus Areas */}
           <div className="PanelSubhead"><CalendarDays className="mr-1" /> Focus Areas</div>
@@ -1188,13 +1118,12 @@ if (!userId) {
             <div className="EquipCol">
               <div className="Label">Dumbbells (lb)</div>
               <div className="ChipRow">
-                  {equip.dumbbells.map((n) => (
-                    <span key={`db-${n}`} className="Chip" data-selected="true">
-                      {n}<span className="ChipUnit"> LB</span> <button onClick={() => removeDB(n)}>×</button>
-                    </span>
-                  ))}
-                </div>
-
+                {equip.dumbbells.map((n) => (
+                  <span key={`db-${n}`} className="Chip" data-selected="true">
+                    {n}<span className="ChipUnit"> LB</span> <button onClick={() => removeDB(n)}>×</button>
+                  </span>
+                ))}
+              </div>
 
               <div className="Row">
                 <input
@@ -1215,14 +1144,13 @@ if (!userId) {
             {/* Kettlebells */}
             <div className="EquipCol">
               <div className="Label">Kettlebells (lb)</div>
-                <div className="ChipRow">
-                    {equip.kettlebells.map((n) => (
-                      <span key={`kb-${n}`} className="Chip" data-selected="true">
-                        {n}<span className="ChipUnit"> LB</span> <button onClick={() => removeKB(n)}>×</button>
-                      </span>
-                    ))}
-                  </div>
-
+              <div className="ChipRow">
+                {equip.kettlebells.map((n) => (
+                  <span key={`kb-${n}`} className="Chip" data-selected="true">
+                    {n}<span className="ChipUnit"> LB</span> <button onClick={() => removeKB(n)}>×</button>
+                  </span>
+                ))}
+              </div>
 
               <div className="Row">
                 <input
@@ -1255,73 +1183,61 @@ if (!userId) {
             </div>
           </div>
 
-          {/* Parser → chips */}
-           {/* Equipment */}
-<div className="Col col-span-2">
-  <label className="Label">Add any extra equipment that you may have</label>
+          {/* Equipment free-text add */}
+          <div className="Col col-span-2">
+            <label className="Label">Add any extra equipment that you may have</label>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {(meta.equipment || []).map((eq: string, idx: number) => (
+                <span
+                  key={eq + idx}
+                  className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900"
+                >
+                  {eq}
+                  <button
+                    type="button"
+                    aria-label={`Remove ${eq}`}
+                    className="text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+                    onClick={() =>
+                      setMeta(m => ({
+                        ...m,
+                        equipment: (m.equipment || []).filter((x: string, i: number) => i !== idx),
+                      }))
+                    }
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {(!meta.equipment || meta.equipment.length === 0) && (
+                <span className="text-xs text-neutral-500">No equipment added yet.</span>
+              )}
+            </div>
 
-  {/* Chips list */}
-  <div className="flex flex-wrap gap-2 mb-2">
-    {(meta.equipment || []).map((eq: string, idx: number) => (
-      <span
-        key={eq + idx}
-        className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900"
-      >
-        {eq}
-        <button
-          type="button"
-          aria-label={`Remove ${eq}`}
-          className="text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
-          onClick={() =>
-            setMeta(m => ({
-              ...m,
-              equipment: (m.equipment || []).filter((x: string, i: number) => i !== idx),
-            }))
-          }
-        >
-          ×
-        </button>
-      </span>
-    ))}
-    {(!meta.equipment || meta.equipment.length === 0) && (
-      <span className="text-xs text-neutral-500">No equipment added yet.</span>
-    )}
-  </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                inputMode="text"
+                placeholder="e.g., soft bike, treadmill, rower, elliptical"
+                className="Field flex-1 bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700"
+                value={tempEquipment || ''}
+                onChange={(e) => setTempEquipment(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { addEquipmentFromInput(); }
+                }}
+              />
+              <button
+                type="button"
+                className="rounded-lg px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-700"
+                onClick={addEquipmentFromInput}
+              >
+                Add
+              </button>
+            </div>
 
-  {/* Add equipment input */}
-  <div className="flex items-center gap-2">
-    <input
-      type="text"
-      inputMode="text"
-      placeholder="e.g., soft bike, treadmill, rower, elliptical"
-      className="Field flex-1 bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700"
-      value={tempEquipment || ''}
-      onChange={(e) => setTempEquipment(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') { addEquipmentFromInput(); }
-      }}
-    />
-    <button
-      type="button"
-      className="rounded-lg px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-700"
-      onClick={addEquipmentFromInput}
-    >
-      Add
-    </button>
-  </div>
-
-  {/* Optional hint: quickly add multiple by comma */}
-  <div className="mt-1 text-xs text-neutral-500">
-    Tip: add several at once with commas — e.g. <em>soft bike, treadmill, rower</em>
-  </div>
-</div>
-
-
-  {/* Optional hint: quickly add multiple by comma */}
-  <div className="mt-1 text-xs text-neutral-500">
-    Tip: add several at once with commas — e.g. <em>soft bike, treadmill, rower</em>
-  </div>
-</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Tip: add several at once with commas — e.g. <em>soft bike, treadmill, rower</em>
+            </div>
+          </div>
         </div>
 
         {/* Actions (kept OUTSIDE so the button shows spinner) */}
@@ -1348,7 +1264,6 @@ if (!userId) {
             )}
           </Btn>
 
-          {/* Screen-reader status (invisible to sighted users) */}
           <div className="sr-only" aria-live="polite" aria-atomic="true">
             {loading ? 'Generating your weekly plan…' : ''}
           </div>

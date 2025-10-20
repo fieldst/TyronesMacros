@@ -1,130 +1,123 @@
 // lib/recalcDay.ts
+// Minimal, safe implementation that matches how TargetsView calls it:
+//   await recalcAndPersistDay(userId, dateKey)
+//
+// It sums foods/workouts for the day, derives an allowance (targets.calories + workout_cals),
+// respects locked_remaining/remaining_override, and writes totals back to days.totals.
+
 import { supabase } from '../supabaseClient';
-import { saveDaySnapshot } from '../services/dayService';
 
 export type DayTotals = {
   food_cals: number;
   workout_cals: number;
   allowance: number;
   remaining: number;
+  locked_remaining?: boolean;
+  remaining_override?: number | null;
   protein?: number;
   carbs?: number;
   fat?: number;
-  // NEW: support locking the “remaining” number
-  locked_remaining?: boolean;          // when true, never auto-change remaining
-  remaining_override?: number | null;  // manual override if user edits remaining
 };
 
-/**
- * Recalculate totals for a day and persist them to days.totals.
- * - food_entries: sum(calories, protein, carbs, fat)
- * - workout_entries: sum(calories_burned)
- * - allowance = baseTarget + workout_cals
- * - remaining = allowance - food_cals
- */
-export async function recalcAndPersistDay(
-  userId: string,
-  date: string,
-  baseTarget?: number
-): Promise<DayTotals> {
-  // Totals: food
-  const { data: foodAgg, error: foodErr } = await supabase
-    .from('food_entries')
-    .select('calories, protein, carbs, fat')
-    .eq('user_id', userId)
-    .eq('entry_date', date);
-  if (foodErr) throw foodErr;
-  
-  const foodTotals = (foodAgg as any[] | null)?.reduce((acc, r) => ({
-    calories: acc.calories + (Number(r.calories) || 0),
-    protein: acc.protein + (Number(r.protein) || 0),
-    carbs: acc.carbs + (Number(r.carbs) || 0),
-    fat: acc.fat + (Number(r.fat) || 0),
-  }), { calories: 0, protein: 0, carbs: 0, fat: 0 }) ?? { calories: 0, protein: 0, carbs: 0, fat: 0 };
+type SumRow = { calories?: number | null; calories_burned?: number | null };
 
-  // Totals: workouts (use calories_burned)
-  const { data: woAgg, error: woErr } = await supabase
-    .from('workout_entries')
+async function sumFoods(userId: string, dateKey: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('foods')
+    .select('calories')
+    .eq('user_id', userId)
+    .eq('date', dateKey);
+  if (error || !Array.isArray(data)) return 0;
+  return (data as SumRow[]).reduce((n, r) => n + (Number(r.calories) || 0), 0);
+}
+
+async function sumWorkouts(userId: string, dateKey: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('workouts')
     .select('calories_burned')
     .eq('user_id', userId)
-    .eq('entry_date', date);
-  if (woErr) throw woErr;
-  const workout_cals = (woAgg as any[] | null)?.reduce((s, r) => s + (Number(r.calories_burned) || 0), 0) ?? 0;
+    .eq('date', dateKey);
+  if (error || !Array.isArray(data)) return 0;
+  return (data as SumRow[]).reduce((n, r) => n + (Number(r.calories_burned) || 0), 0);
+}
 
-  // Get base target from days table if not provided
-  let base = baseTarget;
-  if (typeof base !== 'number') {
-    const { data: dayRow } = await supabase
+async function readDayRow(userId: string, dateKey: string) {
+  const { data } = await supabase
+    .from('days')
+    .select('id, totals, targets')
+    .eq('user_id', userId)
+    .eq('date', dateKey)
+    .maybeSingle();
+  return data as { id?: string; totals?: any; targets?: any } | null;
+}
+
+async function upsertDayTotals(userId: string, dateKey: string, totals: DayTotals) {
+  const { data: existing } = await supabase
+    .from('days')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('date', dateKey)
+    .maybeSingle();
+
+  if (existing?.id) {
+    await supabase
       .from('days')
-      .select('targets')
+      .update({ totals, updated_at: new Date().toISOString() })
       .eq('user_id', userId)
-      .eq('date', date)
-      .maybeSingle();
-    base = Number(dayRow?.targets?.calories || 2200);
-  }
-
-  // Check the previous totals to see if remaining is locked
-const { data: prevRow } = await supabase
-  .from('days')
-  .select('totals')
-  .eq('user_id', userId)
-  .eq('date', date)
-  .maybeSingle();
-
-const prevTotals = (prevRow?.totals ?? {}) as Partial<DayTotals>;
-
-const allowance = Math.max(0, Math.round(base + workout_cals));
-
-// Default remaining if not locked
-let remaining = Math.round(allowance - foodTotals.calories);
-
-// If remaining is locked, keep the existing number (or explicit override)
-if (prevTotals.locked_remaining) {
-  if (typeof prevTotals.remaining_override === 'number') {
-    remaining = Math.round(Number(prevTotals.remaining_override));
-  } else if (typeof prevTotals.remaining === 'number') {
-    remaining = Math.round(Number(prevTotals.remaining));
+      .eq('date', dateKey);
+  } else {
+    await supabase
+      .from('days')
+      .insert({ user_id: userId, date: dateKey, totals, updated_at: new Date().toISOString() });
   }
 }
 
-const totals: DayTotals = { 
-  food_cals: foodTotals.calories, 
-  workout_cals, 
-  allowance, 
-  remaining,
-  protein: foodTotals.protein,
-  carbs: foodTotals.carbs,
-  fat: foodTotals.fat,
-  locked_remaining: Boolean(prevTotals.locked_remaining),
-  remaining_override: (typeof prevTotals.remaining_override === 'number')
-    ? Number(prevTotals.remaining_override)
-    : null,
-};
+/**
+ * Recalculate and persist totals for a user/day.
+ * Safe to call repeatedly; respects locked_remaining.
+ */
+export async function recalcAndPersistDay(userId: string, dateKey: string): Promise<DayTotals> {
+  if (!userId || !dateKey) throw new Error('recalcAndPersistDay: missing params');
 
+  const [foodCals, workoutCals, dayRow] = await Promise.all([
+    sumFoods(userId, dateKey),
+    sumWorkouts(userId, dateKey),
+    readDayRow(userId, dateKey),
+  ]);
 
-  // Persist back to days.totals
-  const { error: updErr } = await supabase
-    .from('days')
-    .update({ totals, updated_at: new Date().toISOString() })
-    .eq('user_id', userId)
-    .eq('date', date);
-  if (updErr) throw updErr;
+  // Base target calories: prefer today's targets.calories; fallback to 0
+  const baseTarget =
+    (dayRow?.targets && Number(dayRow.targets.calories)) ||
+    0;
 
-  // Update snapshot cache
-  const { data: dayRow } = await supabase
-    .from('days')
-    .select('targets')
-    .eq('user_id', userId)
-    .eq('date', date)
-    .maybeSingle();
-    
-  if (dayRow?.targets) {
-    saveDaySnapshot({
-      date,
-      targets: dayRow.targets,
-      totals
-    });
+  const allowance = Math.max(0, baseTarget + workoutCals);
+
+  // Prior totals (for lock behavior)
+  const prior = (dayRow?.totals || {}) as Partial<DayTotals>;
+
+  let remaining = allowance - foodCals;
+  if (prior?.locked_remaining) {
+    if (typeof prior.remaining_override === 'number') {
+      remaining = prior.remaining_override;
+    } else if (typeof prior.remaining === 'number') {
+      remaining = prior.remaining;
+    }
   }
 
+  const totals: DayTotals = {
+    food_cals: foodCals,
+    workout_cals: workoutCals,
+    allowance,
+    remaining,
+    locked_remaining: Boolean(prior?.locked_remaining),
+    remaining_override: prior?.remaining_override ?? null,
+
+    // Keep any existing macros if present (don’t zero them)
+    protein: typeof prior?.protein === 'number' ? prior.protein : undefined,
+    carbs: typeof prior?.carbs === 'number' ? prior.carbs : undefined,
+    fat: typeof prior?.fat === 'number' ? prior.fat : undefined,
+  };
+
+  await upsertDayTotals(userId, dateKey, totals);
   return totals;
 }

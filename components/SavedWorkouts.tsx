@@ -10,7 +10,6 @@ import {
 import { eventBus } from "../lib/eventBus";
 import { getCurrentUserId } from '../auth';
 
-
 type Props = {
   initialPlanToSave?: any; // optional plan passed in via navigation state
 };
@@ -42,11 +41,10 @@ export default function SavedWorkouts(_props: Props) {
   }, []);
 
   useEffect(() => {
-  (async () => {
-    try { setUserId(await getCurrentUserId()); } catch { setUserId(null); }
-  })();
-}, []);
-
+    (async () => {
+      try { setUserId(await getCurrentUserId()); } catch { setUserId(null); }
+    })();
+  }, []);
 
   const onSave = async () => {
     setError(null);
@@ -81,23 +79,22 @@ export default function SavedWorkouts(_props: Props) {
     try {
       const { inserted } = await addSavedToToday(sw);
       setMessage(`Added ${inserted} item(s) to Today.`);
-      // Notify TodayView to recalc
       eventBus.emit("day:totals", {});
     } catch (e: any) {
       setError(e?.message ?? "Failed to add to Today.");
     }
   };
+
   // 🚫 Require login: block this page when logged out
-// 🚫 Require login: block this page when logged out
-if (!userId) {
-  return (
-    <div className="min-h-[100svh] w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
-      <div className="mx-auto w-full max-w-md px-4 py-6">
-        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4">
-          <div className="text-lg font-semibold mb-1">Please sign in</div>
-          <div className="text-sm text-neutral-500 dark:text-neutral-400">
-            Saved Workouts are available for logged-in users. It’s totally free.
-          </div>
+  if (!userId) {
+    return (
+      <div className="min-h-[100svh] w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+        <div className="mx-auto w-full max-w-md px-4 py-6">
+          <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4">
+            <div className="text-lg font-semibold mb-1">Please sign in</div>
+            <div className="text-sm text-neutral-500 dark:text-neutral-400">
+              Saved Workouts are available for logged-in users. It’s totally free.
+            </div>
             <div className="mt-3 flex gap-2">
               <button
                 type="button"
@@ -109,19 +106,16 @@ if (!userId) {
               <button
                 type="button"
                 onClick={() => eventBus.emit('auth:open', { mode: 'sign-up' })}
-                className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
+                className="rounded-XL px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
               >
                 Create a free account
               </button>
             </div>
-
-
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
-
+    );
+  }
 
   return (
     <div className="p-4 max-w-3xl mx-auto">
@@ -144,7 +138,6 @@ if (!userId) {
         />
         <p className="text-sm opacity-80 mb-2">
           Add your own workout and press <span className="font-semibold">Save workout</span>.
-          
         </p>
 
         {/* Keep a hidden textarea so we don’t refactor any save logic elsewhere */}
@@ -197,7 +190,6 @@ if (!userId) {
 
                 <div className="mt-2 text-sm">
                   {(() => {
-                    // Avoid TypeScript annotations in this IIFE for compatibility
                     const planObj = sw && sw.plan ? sw.plan : {};
                     const blocks = Array.isArray(planObj.blocks) ? planObj.blocks : [];
                     const simpleItems = Array.isArray(planObj.items) ? planObj.items : [];
@@ -214,12 +206,10 @@ if (!userId) {
                                 {b && b.kind ? b.kind : "Block"}
                               </div>
 
-                              {/* Main line */}
                               <div className="text-sm font-medium">
                                 {b && (b.text || b.name) ? (b.text || b.name) : `Block ${idx + 1}`}
                               </div>
 
-                              {/* Meta line */}
                               <div className="text-xs opacity-80 mt-1 flex flex-wrap gap-x-3 gap-y-1">
                                 {typeof b?.minutes === "number" && <span>{b.minutes} min</span>}
                                 {b && b.loadRx && <span>Load: {b.loadRx}</span>}
@@ -255,7 +245,6 @@ if (!userId) {
                       );
                     }
 
-                    // Fallback – show the raw JSON only if we can't parse a known shape
                     return (
                       <pre className="mt-2 text-xs overflow-auto bg-gray-50 dark:bg-gray-900 p-2 rounded-xl">
                         {JSON.stringify(planObj, null, 2)}
