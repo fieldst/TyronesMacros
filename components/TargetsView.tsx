@@ -1,4 +1,4 @@
-  // components/TargetsView.tsx
+// components/TargetsView.tsx
 import React, { useEffect, useMemo, useState } from 'react';
 import Modal from './Modal';
 import { supabase } from '../supabaseClient';
@@ -10,6 +10,7 @@ import { recalcAndPersistDay } from '../lib/recalcDay';
 import { suggestTargets, type SuggestTargetsResult } from '../utils/suggestTargets';
 import { localDateKey } from '../lib/dateLocal';
 
+
 type Sex = 'male'|'female'
 type InferredGoal = 'cut'|'lean'|'bulk'|'recomp'
 type Suggestion = {
@@ -17,7 +18,357 @@ type Suggestion = {
   why: string; goal_label: InferredGoal;
 }
 
-// ... (file contents unchanged from your version above)
+// --- Goal parsing ---------------------------------------------------------
+function parseGoalDetails(text: string | null) {
+  const raw = (text || '').toLowerCase();
+
+    // rates like "1 lb/week", "2lbs per week", "0.5 lb a week"
+  const rateMatch = raw.match(/(\d+(\.\d+)?)\s*(lb|lbs|pounds)\s*\/?\s*(wk|week|per week)/);
+  const rateLbsPerWeek = rateMatch ? Math.max(0.1, parseFloat(rateMatch[1])) : null;
+
+  // totals like "lose 20 lb", "gain 10 pounds"
+  const totalMatch = raw.match(/(lose|gain|drop|add)\s+(\d+(\.\d+)?)\s*(lb|lbs|pounds)/);
+  const verb = totalMatch ? totalMatch[1] : null;
+  const totalLbs = totalMatch ? parseFloat(totalMatch[2]) : null;
+
+  // timeline like "in 8 weeks", "over 12 wk"
+  const timeMatch = raw.match(/in\s+(\d+)\s*(wk|wks|week|weeks|mo|month|months)/);
+  const n = timeMatch ? parseInt(timeMatch[1], 10) : null;
+  const weeks = timeMatch ? (timeMatch[2].startsWith('m') ? n! * 4 : n) : null;
+
+  // body fat from→to like "from 20% to 15%" or "20% to 15%"
+  const bfMatch = raw.match(/(\d{1,2})\s*%\s*(to|→|-)\s*(\d{1,2})\s*%/);
+  const bfFrom = bfMatch ? parseInt(bfMatch[1], 10) : null;
+  const bfTo   = bfMatch ? parseInt(bfMatch[3], 10) : null;
+
+  // desired direction
+  const isGain = /gain|add|bulk|increase/.test(raw);
+  const isLose = /lose|cut|drop|reduce/.test(raw);
+  const isRecomp = /recomp|recomposition/.test(raw) || (isGain && isLose);
+
+  let inferred: InferredGoal = 'lean';
+  if (isRecomp) inferred = 'recomp';
+  else if (isGain) inferred = 'bulk';
+  else if (isLose) inferred = 'cut';
+
+  // derive a rate if user gave only total + timeline
+  let derivedRate = rateLbsPerWeek;
+  if (!derivedRate && totalLbs && weeks && weeks > 0) {
+    derivedRate = +(totalLbs / weeks).toFixed(2);
+  }
+
+  return { inferred, rateLbsPerWeek: derivedRate, totalLbs, verb, weeks, bfFrom, bfTo };
+}
+
+// Adapter to keep older calls working (module-scope)
+function inferGoalFromText(text: string | null): InferredGoal {
+  return parseGoalDetails(text).inferred;
+}
+
+// --- Energy math ----------------------------------------------------------
+function mifflinStJeor(sex: Sex, age: number, heightIn: number, weightLbs: number) {
+  const kg = weightLbs * 0.453592, cm = heightIn * 2.54;
+  const base = (10*kg) + (6.25*cm) - (5*age);
+  return Math.round(sex === 'male' ? base + 5 : base - 161);
+}
+function activityMultiplier(label?: string | null) {
+  const v = (label||'').toLowerCase();
+  if (v.includes('very') && v.includes('active')) return 1.725;
+  if (v.includes('active')) return 1.55;
+  if (v.includes('light')) return 1.375;
+  if (v.includes('sedentary') || v.includes('low')) return 1.2;
+  return 1.4;
+}
+
+// kcal/day delta from lbs/week (≈ 3500 kcal per lb ≈ 500/day per lb/week)
+function kcalDeltaFromRate(lbsPerWeek: number) {
+  return Math.round(500 * lbsPerWeek);
+}
+
+// --- Macro math -----------------------------------------------------------
+function defaultMacros(kcal: number, weightLbs: number, g: InferredGoal) {
+  const protein_g = Math.round((g==='cut'||g==='recomp'?1.0:0.9) * weightLbs);
+  const fat_g = Math.max(40, Math.round((kcal * 0.25) / 9)); // keep a fat floor
+  const carbs_g = Math.max(0, Math.round((kcal - protein_g*4 - fat_g*9) / 4));
+  return { protein_g, carbs_g, fat_g };
+}
+
+// --- Main local coach ------------------------------------------------------
+export function localCoachSuggestion(params: {
+  sex: Sex; age: number; heightIn: number; weightLbs: number; activity: string; goalText: string | null
+}): Suggestion {
+  const parsed = parseGoalDetails(params.goalText);
+  const bmr  = mifflinStJeor(params.sex, params.age, params.heightIn, params.weightLbs);
+  const tdee = Math.round(bmr * activityMultiplier(params.activity));
+
+  // choose sign for rate: gain => +, loss => -
+  const sign = parsed.inferred === 'bulk' ? +1 : parsed.inferred === 'cut' ? -1 : 0;
+
+  // requested rate (lbs/wk) with caps (keep your existing math intact)
+  const capLoss = 1.25, capGain = 0.75;
+  let rate = parsed.rateLbsPerWeek ?? (parsed.inferred === 'bulk' ? 0.35 : parsed.inferred === 'cut' ? 0.75 : 0.25);
+  if (sign < 0) rate = Math.min(rate, capLoss);
+  if (sign > 0) rate = Math.min(rate, capGain);
+  if (sign === 0) rate = 0.25;
+
+  // translate rate -> kcal delta, then clamp by % of TDEE (±20%)
+  let kcal = tdee + sign * kcalDeltaFromRate(rate);
+  const maxDeficit = Math.round(tdee * 0.20);
+  const maxSurplus = Math.round(tdee * 0.20);
+  if (sign < 0) kcal = Math.max(tdee - maxDeficit, kcal);
+  if (sign > 0) kcal = Math.min(tdee + maxSurplus, kcal);
+
+  const macros = defaultMacros(kcal, params.weightLbs, parsed.inferred);
+
+  // ---------- NEW: concise, valuable rationale (no recap, no "safety") ----------
+  const dKcal = Math.abs(kcal - tdee);
+  const strategy =
+    parsed.inferred === 'bulk'
+      ? `Lean-bulk: small surplus (~${dKcal || 200} kcal/day) to build muscle without extra fat.`
+      : parsed.inferred === 'cut'
+      ? `Cut: small deficit (~${dKcal || 250} kcal/day) to drop fat while keeping training quality high.`
+      : parsed.inferred === 'recomp'
+      ? `Recomp: around maintenance to add muscle while trimming fat slowly.`
+      : `Performance: near maintenance for steady training and recovery.`;
+
+  const training =
+    parsed.inferred === 'bulk'
+      ? `Training: 5 days lifting (each muscle ~2×/week); short conditioning keeps fitness without slowing gains.`
+      : parsed.inferred === 'cut'
+      ? `Training: 3–4 days lifting to keep strength; 2–3 short HIIT/circuit sessions; one easy Zone-2.`
+      : `Training: 4 lifting days + 2 short conditioning sessions for balanced progress.`;
+
+  const why = [
+    `Why this target was chosen:\n`,
+    `• ${strategy}`,
+    `• Protein ~${macros.protein_g} g — rebuilds muscle and improves fullness.`,
+    `• Carbs ~${macros.carbs_g} g — fuel hard sessions and speed recovery.`,
+    `• Fats ~${macros.fat_g} g (~25–30% of ${kcal} kcal) — support hormones and joints.`,
+    `• ${training}`,
+    ``,
+    `What to do next:`,
+    `• Progress main lifts weekly (+2–5 lb or +1 rep).`,
+    `• Log meals; if weight trend stalls ~2 weeks, adjust ±100–150 kcal.`,
+  ].join('\n');
+  // ------------------------------------------------------------------------------
+
+  return { kcal, ...macros, goal_label: parsed.inferred, why };
+}
+
+
+
+
+// ---------------------------------------------------------------------------
+
+// --- Five-day meal plan (local fallback if API returns none) -------------
+function pick<T>(arr: T[]) { return arr[Math.floor(Math.random()*arr.length)]; }
+
+function buildFiveDayMealPlan(macros: MacroSet, goal: InferredGoal): MealPlanDay[] {
+  const pPerMeal = Math.max(22, Math.round((macros.protein || 0) / 4));
+
+  const breakfasts = [
+    `3/4 cup (170 g) Greek yogurt + 1/2 cup berries + 1/3 cup dry oats (~${Math.round(pPerMeal*0.9)}g protein)`,
+    `3 whole eggs + 2 egg whites scrambled, 1 slice whole-grain toast (~${Math.round(pPerMeal*1.0)}g protein)`,
+    `Overnight oats: 1/2 cup oats + 1 scoop whey + 1 cup milk (~${Math.round(pPerMeal*1.1)}g protein)`,
+    `1 cup (220 g) cottage cheese + 1/2 cup pineapple + 1/4 cup granola (~${Math.round(pPerMeal*0.9)}g protein)`,
+  ];
+
+  const lunches = [
+    `6–7 oz cooked chicken breast + 1 cup cooked rice + 1 cup mixed veggies (~${Math.round(pPerMeal*1.1)}g protein)`,
+    `6 oz turkey breast sandwich (2 slices bread) + 1 small apple + 5 oz yogurt (~${Math.round(pPerMeal*1.0)}g protein)`,
+    `1.5 cups beef chili + 1 medium baked potato (~${Math.round(pPerMeal*1.0)}g protein)`,
+    `1 can (5 oz) tuna + 3/4 cup cooked quinoa + 2 cups salad, 2 tbsp vinaigrette (~${Math.round(pPerMeal*1.1)}g protein)`,
+  ];
+
+  const snacks = [
+    `1 scoop whey + 1 medium banana (~${Math.round(pPerMeal*0.7)}g protein)`,
+    `3/4 cup (170 g) Greek yogurt + 1 oz almonds (~${Math.round(pPerMeal*0.8)}g protein)`,
+    `Protein bar (read label) + 1 medium apple (~${Math.round(pPerMeal*0.7)}g protein)`,
+    `1 cup (220 g) cottage cheese + 8 crackers (~${Math.round(pPerMeal*0.7)}g protein)`,
+  ];
+
+  const dinners = [
+    `6 oz salmon + 1 cup roasted potatoes + 2 cups salad, 2 tbsp dressing (~${Math.round(pPerMeal*1.0)}g protein)`,
+    `6 oz lean steak + 1 cup cooked rice + 1 cup green beans (~${Math.round(pPerMeal*1.1)}g protein)`,
+    `6 oz chicken thighs + 3/4 cup couscous + 1 cup veggies (~${Math.round(pPerMeal*1.0)}g protein)`,
+    `8 oz tofu stir-fry + 1 cup cooked rice (~${Math.round(pPerMeal*1.0)}g protein)`,
+  ];
+
+  const note =
+    goal === 'cut'
+      ? 'Coach: Keep veggies high-volume; hydrate before meals; trim starch slightly on full rest days.'
+      : goal === 'bulk'
+      ? 'Coach: Add 1 extra carb serving near training and consider a small pre-bed protein snack.'
+      : goal === 'recomp'
+      ? 'Coach: Keep protein steady; place more carbs near training; keep fats moderate.'
+      : 'Coach: Keep intake steady; prioritize whole foods and consistency.';
+
+  const days = ['Day 1','Day 2','Day 3','Day 4','Day 5'];
+  return days.map((day, i) => ({
+    day,
+    meals: [
+      { label: 'Breakfast', idea: breakfasts[(i+0) % breakfasts.length] },
+      { label: 'Lunch',     idea: lunches[(i+1) % lunches.length]     },
+      { label: 'Snack',     idea: snacks[(i+2) % snacks.length]       },
+      { label: 'Dinner',    idea: dinners[(i+3) % dinners.length]     },
+    ],
+    notes: note,
+  }));
+}
+
+
+function workoutStyleSuggestion(goal: string | null) {
+  let eq: any = {};
+  try { eq = JSON.parse(localStorage.getItem('equipmentProfile') || '{}'); } catch {}
+  const hasDB  = Array.isArray(eq?.dumbbells) && eq.dumbbells.length > 0;
+  const hasKB  = Array.isArray(eq?.kettlebells) && eq.kettlebells.length > 0;
+  const hasBAR = typeof eq?.barbellMax === 'number' && eq.barbellMax > 0;
+
+  const pack = (header: string, bullets: string[]) => ({ header, bullets });
+
+  if (goal === 'bulk') {
+    if (hasBAR) {
+      return pack('Powerbuilding (Strength + Hypertrophy)', [
+        'About 5 days per week. Start sessions with the big whole-body moves (like squats, deadlifts, presses).',
+        'Then lighter “muscle-builder” sets to add size in the right places.',
+        'Short 5–10 minute finishers once or twice a week to keep fitness without slowing gains.',
+      ]);
+    }
+    if (hasDB) {
+      return pack('Upper / Lower', [
+        '4 days per week: two upper-body days and two lower-body days.',
+        'Begin with your strongest moves, then add simple dumbbell work for size.',
+        'Optional quick finisher once a week.',
+      ]);
+    }
+    if (hasKB) {
+      return pack('Kettlebell-Centric', [
+        'Presses, squats, swings, and carries build strong shoulders, legs, and grip.',
+        'Use a heavier set for strength, then a lighter set for 8–12 reps to build muscle.',
+        'End with an easy 5–8 minute finisher.',
+      ]);
+    }
+    return pack('Bodyweight / Calisthenics', [
+      '3–5 days per week using push, pull, squat, and core moves.',
+      'Make it harder by slowing the lower phase or adding a rep each week.',
+      'Add short sprints once a week if you like.',
+    ]);
+  }
+
+  if (goal === 'cut') {
+    if (!hasBAR && hasKB && !hasDB) {
+      return pack('Kettlebell-Centric', [
+        'Short KB combinations (clean, press, squat, swing) raise your heart rate and burn calories.',
+        'Do 2–3 strength sets, then an 8–12 minute brisk finisher.',
+        'Add one easy steady cardio day (“you can talk while moving”).',
+      ]);
+    }
+    return pack('HIIT / Circuit', [
+      '3–4 short lifting days to keep strength, plus 2–3 quick circuits for calorie burn.',
+      'Finishers (6–12 minutes) get you sweaty fast without wrecking recovery.',
+      'Add one easy steady cardio day for base fitness.',
+    ]);
+  }
+
+  // recomp / default
+  if (goal === 'recomp' || !goal) {
+    if (!hasBAR && hasKB && !hasDB) {
+      return pack('Kettlebell-Centric', [
+        'Mix strength sets (5–8 reps) with “density” sets (8–12 reps).',
+        '2–3 KB sessions plus 1 short conditioning session per week.',
+        'Aim for a tiny improvement each week (weight, reps, or smoother form).',
+      ]);
+    }
+    if (!hasBAR && hasDB && !hasKB) {
+      return pack('HIIT / Circuit', [
+        'Dumbbell sessions that start with strength, then a short circuit.',
+        '4 lifting days + 1–2 short conditioning sessions.',
+        'Keep most sets at a “challenging but doable” effort.',
+      ]);
+    }
+    return pack('Hybrid (Strength + Endurance)', [
+        '4 lifting days + 2 cardio days (one short fast effort, one easy steady effort).',
+        'Start with the big moves, then simple assistance work for weak points.',
+        'Make small improvements each week; no need to max out daily.',
+    ]);
+  }
+
+  return pack('Hybrid (Strength + Endurance)', [
+    '4 lifting days + 2 short cardio sessions.',
+    'Big moves first; simple assistance second.',
+    'Track weight/reps and nudge them up gradually.',
+  ]);
+}
+
+
+// ------------------------------------------------------------------------
+
+
+// Optional secondary path: service calc (if you add it later)
+let svcGetTargetsSuggestion: null | ((args: any) => Promise<any>) = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  svcGetTargetsSuggestion = require('../services/openaiService').getTargetsSuggestion;
+} catch { /* ignore if not present */ }
+
+type MacroSet = { calories: number; protein: number; carbs: number; fat: number };
+type Profile = {
+  sex?: 'male' | 'female';
+  age?: number;
+  height_in?: number;
+  weight_lbs?: number;
+  activity_level?: 'sedentary' | 'light' | 'moderate' | 'very';
+};
+
+type MealPlanDay = {
+  day: string;
+  meals: Array<{ label: string; idea: string; approx?: Partial<MacroSet> }>;
+  notes?: string;
+};
+
+type WorkoutItem = { name: string; volume?: string; notes?: string };
+type WorkoutPlanDay = { day: string; blocks: Array<{ title: string; items: WorkoutItem[] }>; notes?: string };
+
+// --- Dynamic API shape (all authored by the model) ---
+type ComboResponse = {
+  targets: {
+    calories: number; protein: number; carbs: number; fat: number;
+    label: string;
+    rationale: string;            // short “why”
+    rationale_detailed: string;   // long “why” (echo user goal, method, safety)
+  };
+  mealPlan: Array<{
+    day: string;
+    meals: Array<{ label: string; idea: string; protein_estimate_g?: number }>;
+    notes?: string;
+  }>;
+  workoutStyle: {                 // replaces workoutPlan
+    header: string;               // dynamic summary explaining the choice
+    bullets: string[];            // dynamic reasons/tips
+  };
+};
+
+type CachedSuggestion = {
+  label?: string;
+  rationale?: string;
+  rationale_detailed?: string;
+  targets: MacroSet;
+  suggestedAtISO: string;
+  mealPlan?: MealPlanDay[];
+  workoutPlan?: WorkoutPlanDay[];
+};
+
+const LS_KEY = 'aiCoachTargetsSuggestion';
+const LS_PROFILE = 'aiCoachUserProfile';
+function todayStr() { return localDateKey(); }
+
+// Parse possible ```json fenced responses
+function parseJsonFromText<T = any>(text: string): T | null {
+  if (!text) return null as any;
+  const fence = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/```\s*([\s\S]*?)```/i);
+  const raw = fence ? fence[1] : text;
+  try { return JSON.parse(raw); } catch { return null; }
+}
 
 export default function TargetsView({
   initialProfile,
@@ -26,15 +377,6 @@ export default function TargetsView({
   initialProfile?: Profile;
   initialLabel?: string | null;
 }) {
-  // (component body unchanged from your version)
-  // The only important bit for build stability is we *import* recalcAndPersistDay from ../lib/recalcDay,
-  // and our recalcDay.ts (below) now exports that exact named function with the expected signature.
-  
-  // ... keep your entire component body as-is ...
-  
-  // (PASTE THE REST OF YOUR EXISTING TargetsView.tsx CONTENT UNCHANGED)
-}
-
   const [userId, setUserId] = useState<string | null>(null);
 
   // Form fields

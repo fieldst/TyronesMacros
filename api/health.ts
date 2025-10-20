@@ -14,4 +14,8 @@ export const GET = wrap(async () =>
   })
 );
 
+export default async () =>
+  new Response(JSON.stringify({ ok: true, t: Date.now() }), { headers: { "Content-Type": "application/json" }});
+
+
 export const POST = GET;

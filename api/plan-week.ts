@@ -96,6 +96,8 @@ function equipmentText(equipment: string[]): string {
   return 'Available Equipment:\\n- ' + equipment.map(s => sanitize(String(s))).join('\\n- ')
 }
 
+
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST')
