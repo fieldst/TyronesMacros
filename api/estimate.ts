@@ -1,7 +1,10 @@
 // api/estimate.ts
 // Canonical Node serverless function for POST /api/estimate
 // Reads req.body.description, returns { success: true, data: { totals } }
-
+export const config = {
+  runtime: 'nodejs',          // keep serverless runtime
+  regions: ['sfo1', 'cle1']   // pin away from iad1
+};
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import OpenAI from 'openai';
 

@@ -2,7 +2,7 @@
   "functions": {
     "api/*.ts": {
       "runtime": "nodejs20.x",
-      "regions": ["sfo1","cle1"]
+      "maxDuration": 10
     }
   }
 }
