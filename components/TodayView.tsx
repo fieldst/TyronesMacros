@@ -16,7 +16,6 @@ import { recalcAndPersistDay } from '../lib/recalcDay';
 import { getActiveTarget, inferGoalFromTargetText } from '../services/targetsService'
 import { mifflinStJeor, activityMultiplier, adjustForGoal, defaultMacros } from '../lib/nutrition'
 import { workoutStyleSuggestion, buildFiveDayMealPlan } from '../services/coachSuggest'
-
 import { getCurrentUserId } from '../auth';
 import {
   estimateMacrosForMeal,
@@ -731,6 +730,33 @@ const deriveKindLabel = (w: any) => {
 
 // --- end: robust kind labeling ---
 
+useEffect(() => {
+  // Keep userId in sync with real-time auth changes (login/logout)
+  const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    setUserId(session?.user?.id ?? null);
+  });
+  return () => {
+    // clean up the subscription on unmount
+    try { sub.subscription?.unsubscribe?.(); } catch {}
+  };
+}, []);
+
+useEffect(() => {
+  if (!userId) return;
+  (async () => {
+    try {
+      // Make sure today's row exists, then recompute/persist totals
+      await ensureTodayDay(userId, localDateKey());
+      await recalcAndPersistDay(userId, localDateKey());
+
+      // Nudge any listeners to refresh (if your view listens for these)
+      eventBus.emit('day:totals');
+      eventBus.emit('day:reload');
+    } catch (e) {
+      console.warn('login->refresh failed:', e);
+    }
+  })();
+}, [userId]);
 
 
   // Resolve display name (silent on missing table)
@@ -752,6 +778,8 @@ const deriveKindLabel = (w: any) => {
   })
   return () => off()
 }, [])
+
+
 
   useEffect(() => {
     let canceled = false;
@@ -1319,13 +1347,15 @@ const line = typeof result === 'string'
 
   // Recalc broadcasts
   useEffect(() => {
-    const onTotals = (payload: { dayId: string; totals: any }) => {
+    const onTotals = (payload?: { dayId?: string; totals?: any }) => {
+  if (!payload || !payload.dayId || !payload.totals) return;
   setDay(prev =>
     prev && prev.id === payload.dayId
       ? { ...prev, totals: normalizeTotals(payload.totals) }
       : prev
   );
 };
+
 
     const unsubs = [
       eventBus.on('day:totals', onTotals),
@@ -1378,11 +1408,16 @@ const line = typeof result === 'string'
     };
   }, [totalsFromMeals, previewMeal]);
 
-  const persistedAllowance  = day?.totals?.allowance ?? (currentGoal?.calories || 0);
-  const persistedRemaining  = day?.totals?.remaining ?? (currentGoal?.calories || 0);
-  const previewWorkoutDelta = previewWorkoutKcal > 0 ? previewWorkoutKcal : 0;
-  const dailyAllowance = Math.max(0, Math.round(persistedAllowance + previewWorkoutDelta));
-  const remainingCalories = Math.round((persistedRemaining + previewWorkoutDelta) - (previewMeal?.calories || 0));
+  // When logged out, show zeros everywhere
+const isAnon = !userId;
+
+const persistedAllowance  = isAnon ? 0 : (day?.totals?.allowance ?? (currentGoal?.calories || 0));
+const persistedRemaining  = isAnon ? 0 : (day?.totals?.remaining ?? (currentGoal?.calories || 0));
+const previewWorkoutDelta = isAnon ? 0 : (previewWorkoutKcal > 0 ? previewWorkoutKcal : 0);
+
+const dailyAllowance    = Math.max(0, Math.round(persistedAllowance + previewWorkoutDelta));
+const remainingCalories = Math.round((persistedRemaining + previewWorkoutDelta) - (previewMeal?.calories || 0));
+
 
   // Scaled macro goals
   const scaledProteinGoal = useMemo(() => {
@@ -1500,15 +1535,15 @@ async function deleteFoodLocal(id: string) {
  async function addWorkout() {
   if (!workoutText.trim() || !userId) return;
 
-  // ✅ guarantee a valid date key even if dayId hasn't been set yet
-  const safeDayId = dayId || localDateKey();
-
   setBusy(true);
   try {
+    // Ensure we have a REAL day row id (not the date string)
+    const realDayId = dayId ?? (await ensureTodayDay(userId, localDateKey())).id;
+
     const kcal = await estimateWorkoutKcalSmart(workoutText.trim(), profile);
     await upsertWorkoutEntry({
       userId,
-      dayId: safeDayId,
+      dayId: realDayId,
       kind: workoutText.trim(),
       calories: kcal,
       meta: { source: 'ai_estimate' },
@@ -1522,7 +1557,7 @@ async function deleteFoodLocal(id: string) {
     const { data: d } = await supabase
       .from('days')
       .select('id, totals')
-      .eq('id', safeDayId)   // ← safe
+      .eq('id', realDayId)
       .maybeSingle();
 
     if (d) setDay(prev => (prev ? { ...prev, totals: (d as any).totals } : prev));
@@ -1532,6 +1567,7 @@ async function deleteFoodLocal(id: string) {
     setBusy(false);
   }
 }
+
 
 // re-add/define this handler so the Edit modal's button works
 const estimateEditWorkoutKcal = React.useCallback(async () => {
@@ -1547,30 +1583,37 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
   }
 }, [editWoKind, profile])
 
-  async function saveEditWorkout() {
-  if (!userId || !editWoId) return
-  const safeDayId = dayId || localDateKey()   // <-- safe fallback
-  setBusy(true)
+async function saveEditWorkout() {
+  if (!userId || !editWoId) return;
+  setBusy(true);
   try {
-    const aiKcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile)
-    setEditWoKcal(aiKcal)
+    // Ensure real day id (not date string)
+    const realDayId = dayId ?? (await ensureTodayDay(userId, localDateKey())).id;
+
+    const aiKcal = await estimateWorkoutKcalSmart(editWoKind.trim(), profile);
+    setEditWoKcal(aiKcal);
     await upsertWorkoutEntry({
       id: editWoId,
       userId,
-      dayId: safeDayId,
+      dayId: realDayId,
       kind: editWoKind.trim(),
       calories: Math.max(0, aiKcal),
       meta: { source: 'manual_edit_ai_estimated' }
-    })
-    await loadWorkouts(userId, dayKey)
-    const { data: d } = await supabase.from('days').select('id, totals').eq('id', safeDayId).maybeSingle()
+    });
+    await loadWorkouts(userId, dayKey);
+    const { data: d } = await supabase
+      .from('days')
+      .select('id, totals')
+      .eq('id', realDayId)
+      .maybeSingle();
     if (d) setDay(prev => (prev ? { ...prev, totals: normalizeTotals((d as any).totals) } : prev));
-    setEditWoOpen(false)
-    showToast(`Saved with AI-estimated ${aiKcal} kcal`)
+    setEditWoOpen(false);
+    showToast(`Saved with AI-estimated ${aiKcal} kcal`);
   } finally {
-    setBusy(false)
+    setBusy(false);
   }
 }
+
 
 
 
@@ -1753,18 +1796,26 @@ const estimateEditWorkoutKcal = React.useCallback(async () => {
 
         {/* Summary */}
       <div className="grid grid-cols-3 gap-2 rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3 mb-4">
-  <SummaryPill
+  <SummaryPill 
   variant="target"
   label="Current target"
-  value={`${day?.targets?.calories
-  ?? (profile as any)?.current_target?.calories
-  ?? currentGoal?.calories
-  ?? macroTargets?.kcal
-  ?? '—'} kcal`}
+  value={isAnon ? '0 kcal' : `${Math.round(dailyAllowance)} kcal`}
+
 />
 
-  <SummaryPill variant="exercise" label="Exercise added"   value={`${Math.round(day?.totals?.workoutCals ?? 0)} kcal`} />
-  <SummaryPill variant="allowance"label="Remaining calories"  value={`${Math.round(remainingCalories)} kcal`} />
+<SummaryPill
+  variant="exercise"
+  label="Exercise added"
+  value={isAnon ? '0 kcal' : `${Math.round(day?.totals?.workoutCals ?? 0)} kcal`}
+/>
+
+<SummaryPill
+  variant="allowance"
+  label="Remaining calories"
+  value={`${Math.round(remainingCalories)} kcal`}
+
+/>
+
 </div>
 
 

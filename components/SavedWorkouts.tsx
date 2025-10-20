@@ -8,6 +8,8 @@ import {
   SavedWorkout,
 } from "../services/savedWorkoutsService";
 import { eventBus } from "../lib/eventBus";
+import { getCurrentUserId } from '../auth';
+
 
 type Props = {
   initialPlanToSave?: any; // optional plan passed in via navigation state
@@ -20,6 +22,7 @@ export default function SavedWorkouts(_props: Props) {
   const [savePlan, setSavePlan] = useState({ items: [] }); // keep structure; no JSON typing needed
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -37,6 +40,13 @@ export default function SavedWorkouts(_props: Props) {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+  (async () => {
+    try { setUserId(await getCurrentUserId()); } catch { setUserId(null); }
+  })();
+}, []);
+
 
   const onSave = async () => {
     setError(null);
@@ -77,6 +87,41 @@ export default function SavedWorkouts(_props: Props) {
       setError(e?.message ?? "Failed to add to Today.");
     }
   };
+  // 🚫 Require login: block this page when logged out
+// 🚫 Require login: block this page when logged out
+if (!userId) {
+  return (
+    <div className="min-h-[100svh] w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+      <div className="mx-auto w-full max-w-md px-4 py-6">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4">
+          <div className="text-lg font-semibold mb-1">Please sign in</div>
+          <div className="text-sm text-neutral-500 dark:text-neutral-400">
+            Saved Workouts are available for logged-in users. It’s totally free.
+          </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => eventBus.emit('auth:open', { mode: 'sign-in' })}
+                className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black"
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                onClick={() => eventBus.emit('auth:open', { mode: 'sign-up' })}
+                className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
+              >
+                Create a free account
+              </button>
+            </div>
+
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
   return (
     <div className="p-4 max-w-3xl mx-auto">

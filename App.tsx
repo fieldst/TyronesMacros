@@ -36,6 +36,8 @@ const openSignUp = () => {
   try { eventBus.emit('auth:open', { mode: 'sign-up' }); } catch {}
 }
 
+
+
   // Auth UI
   const [displayName, setDisplayName] = useState<string | null>(null)
 
@@ -49,6 +51,17 @@ const openSignUp = () => {
 
   const dateStr = todayDateString()
 
+  useEffect(() => {
+  // Open the auth modal when other pages fire a global event
+  const off = eventBus.on<{ mode?: 'sign-in' | 'sign-up' }>('auth:open', (payload) => {
+    const mode = payload?.mode === 'sign-up' ? 'sign-up' : 'sign-in';
+    setAuthMode(mode);
+    setAuthOpen(true);
+  });
+  return () => off();
+}, []);
+
+  
   useEffect(() => {
     let mounted = true
 

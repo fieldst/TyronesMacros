@@ -692,6 +692,11 @@ const [userId, setUserId] = React.useState<string | null>(null);
   useEffect(() => { saveLS(LS_META, meta) }, [meta])
   useEffect(() => { saveLS(LS_PLAN, week) }, [week])
   useEffect(() => { saveEquipmentProfile(equip) }, [equip])
+  useEffect(() => {
+  (async () => {
+    try { setUserId(await getCurrentUserId()); } catch { setUserId(null); }
+  })();
+}, []);
 
   // Get the logged-in user id once (on mount)
 React.useEffect(() => {
@@ -1007,6 +1012,41 @@ function addEquipmentFromInput() {
     eventBus.emit('day:totals', { date: dateKey })
     alert('Added to Today.')
   }
+  // 🚫 Require login: block this page when logged out
+// 🚫 Require login: block this page when logged out
+if (!userId) {
+  return (
+    <div className="min-h-[100svh] w-full bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+      <div className="mx-auto w-full max-w-md px-4 py-6">
+        <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4">
+          <div className="text-lg font-semibold mb-1">Please sign in</div>
+          <div className="text-sm text-neutral-500 dark:text-neutral-400">
+            Weekly Plan is available for logged-in users. It’s totally free.
+          </div>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={() => eventBus.emit('auth:open', { mode: 'sign-in' })}
+              className="rounded-xl px-3 py-2 text-sm bg-black text-white dark:bg-white dark:text-black"
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => eventBus.emit('auth:open', { mode: 'sign-up' })}
+              className="rounded-xl px-3 py-2 text-sm border border-neutral-200 dark:border-neutral-800"
+            >
+              Create a free account
+            </button>
+          </div>
+
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
   return (
     <div className="PlanRoot">

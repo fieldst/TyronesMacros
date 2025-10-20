@@ -15,8 +15,12 @@ export type DayRow = {
     protein: number;
     carbs: number;
     fat: number;
-  } | null;
+    // NEW
+    locked_remaining?: boolean;
+    remaining_override?: number | null;
+  };
 };
+
 
 export type DaySnapshot = {
   date: string;
@@ -125,7 +129,18 @@ export async function ensureTodayDay(userId: string): Promise<DayRow> {
       user_id: userId,
       date: today,
       targets: { calories: 2200, protein: 170, carbs: 210, fat: 60 },
-      totals: { food_cals: 0, workout_cals: 0, allowance: 2200, remaining: 2200, protein: 0, carbs: 0, fat: 0 }
+      totals: { 
+  food_cals: 0, 
+  workout_cals: 0, 
+  allowance: 2200, 
+  remaining: 2200, 
+  protein: 0, 
+  carbs: 0, 
+  fat: 0,
+  locked_remaining: true,
+  remaining_override: null
+}
+
     })
     .select('id, date, targets, totals')
     .single();

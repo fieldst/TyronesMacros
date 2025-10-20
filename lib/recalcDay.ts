@@ -10,6 +10,9 @@ export type DayTotals = {
   protein?: number;
   carbs?: number;
   fat?: number;
+  // NEW: support locking the “remaining” number
+  locked_remaining?: boolean;          // when true, never auto-change remaining
+  remaining_override?: number | null;  // manual override if user edits remaining
 };
 
 /**
@@ -60,18 +63,44 @@ export async function recalcAndPersistDay(
     base = Number(dayRow?.targets?.calories || 2200);
   }
 
-  const allowance = Math.max(0, Math.round(base + workout_cals));
-  const remaining = Math.round(allowance - foodTotals.calories);
+  // Check the previous totals to see if remaining is locked
+const { data: prevRow } = await supabase
+  .from('days')
+  .select('totals')
+  .eq('user_id', userId)
+  .eq('date', date)
+  .maybeSingle();
 
-  const totals: DayTotals = { 
-    food_cals: foodTotals.calories, 
-    workout_cals, 
-    allowance, 
-    remaining,
-    protein: foodTotals.protein,
-    carbs: foodTotals.carbs,
-    fat: foodTotals.fat
-  };
+const prevTotals = (prevRow?.totals ?? {}) as Partial<DayTotals>;
+
+const allowance = Math.max(0, Math.round(base + workout_cals));
+
+// Default remaining if not locked
+let remaining = Math.round(allowance - foodTotals.calories);
+
+// If remaining is locked, keep the existing number (or explicit override)
+if (prevTotals.locked_remaining) {
+  if (typeof prevTotals.remaining_override === 'number') {
+    remaining = Math.round(Number(prevTotals.remaining_override));
+  } else if (typeof prevTotals.remaining === 'number') {
+    remaining = Math.round(Number(prevTotals.remaining));
+  }
+}
+
+const totals: DayTotals = { 
+  food_cals: foodTotals.calories, 
+  workout_cals, 
+  allowance, 
+  remaining,
+  protein: foodTotals.protein,
+  carbs: foodTotals.carbs,
+  fat: foodTotals.fat,
+  locked_remaining: Boolean(prevTotals.locked_remaining),
+  remaining_override: (typeof prevTotals.remaining_override === 'number')
+    ? Number(prevTotals.remaining_override)
+    : null,
+};
+
 
   // Persist back to days.totals
   const { error: updErr } = await supabase
