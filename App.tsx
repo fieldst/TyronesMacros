@@ -61,7 +61,7 @@ const openSignUp = () => {
   return () => off();
 }, []);
 
-  
+
   useEffect(() => {
     let mounted = true
 
@@ -121,9 +121,11 @@ const openSignUp = () => {
     if (!vv) return
 
     const update = () => {
-      const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
-      document.documentElement.style.setProperty('--kb-offset', `${overlap}px`)
-    }
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  document.documentElement.style.setProperty('--kb-offset', `${overlap}px`);
+}
+
 
     update()
     vv.addEventListener('resize', update)
@@ -274,8 +276,8 @@ const openSignUp = () => {
 
         </div>
 
-      </nav>,
-  document.body
+      </nav>
+  
 
             {/* Auth modal */}
     {/* Auth modal (tolerant to different prop APIs used in the zip) */}
