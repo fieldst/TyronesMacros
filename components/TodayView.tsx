@@ -750,8 +750,17 @@ useEffect(() => {
       await recalcAndPersistDay(userId, localDateKey());
 
       // Nudge any listeners to refresh (if your view listens for these)
-      eventBus.emit('day:totals');
+      try {
+        const { data: d } = await supabase
+          .from('days')
+          .select('id, totals')
+          .eq('id', dayId)
+          .maybeSingle();
+        if (d) eventBus.emit('day:totals', { dayId, totals: normalizeTotals((d as any).totals)
+ });
+      } catch {}
       eventBus.emit('day:reload');
+
     } catch (e) {
       console.warn('login->refresh failed:', e);
     }
@@ -769,7 +778,16 @@ useEffect(() => {
       await recalcAndPersistDay(uid, d)
 
        //  add this so meters/lists update immediately
-      eventBus.emit('day:totals')
+      try {
+        const { data: d } = await supabase
+          .from('days')
+          .select('id, totals')
+          .eq('id', dayId)
+          .maybeSingle();
+        if (d) eventBus.emit('day:totals', { dayId, totals: normalizeTotals((d as any).totals)
+ });
+      } catch {}
+
       // if you have a reloadDay() in scope, call it so the UI lists update
       // await reloadDay()
     } catch (e) {
@@ -779,6 +797,35 @@ useEffect(() => {
   return () => off()
 }, [])
 
+
+// Recompute totals whenever a meal is changed (mirrors your workout listener)
+useEffect(() => {
+  const off = eventBus.on('meal:upsert', async () => {
+    try {
+      const uid = await getCurrentUserId();
+      if (!uid) return;
+      const d = localDateKey();
+      await recalcAndPersistDay(uid, d);
+
+      // nudge meters that listen to day totals
+            try {
+        const { data: d } = await supabase
+          .from('days')
+          .select('id, totals')
+          .eq('id', dayId)
+          .maybeSingle();
+        if (d) eventBus.emit('day:totals', { dayId, totals: normalizeTotals((d as any).totals)
+ });
+      } catch {}
+
+      // If you have a reloadDay() helper, you could call it here
+      // await reloadDay();
+    } catch (e) {
+      console.error('Failed to refresh totals after meal upsert', e);
+    }
+  });
+  return () => off();
+}, []);
 
 
   useEffect(() => {
@@ -1051,10 +1098,24 @@ async function addSavedMealToToday(item: { id: string; name: string; payload: an
     });
 
     // Refresh meals & totals
+    // Refresh meals
     await loadFoods(uid, dayKey);
-    const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-    if (d) setDay(prev => (prev ? { ...prev, totals: (d as any).totals } : prev));
+
+    // Recalc day totals, fetch, normalize, and emit with payload so listeners update
+    await recalcAndPersistDay(uid, localDateKey());
+    const { data: d } = await supabase
+      .from('days')
+      .select('id, totals')
+      .eq('id', dayId)
+      .maybeSingle();
+    if (d) {
+      const nt = normalizeTotals((d as any).totals);
+      setDay(prev => (prev ? { ...prev, totals: nt } : prev));
+      try { eventBus.emit('day:totals', { dayId, totals: nt }); } catch {}
+    }
+
     showToast(`Added saved meal: ${desc}`);
+
   } catch (e: any) {
     alert(e?.message || 'Could not add saved meal.');
   }
@@ -1347,25 +1408,36 @@ const line = typeof result === 'string'
 
   // Recalc broadcasts
   useEffect(() => {
-    const onTotals = (payload?: { dayId?: string; totals?: any }) => {
-  if (!payload || !payload.dayId || !payload.totals) return;
-  setDay(prev =>
-    prev && prev.id === payload.dayId
-      ? { ...prev, totals: normalizeTotals(payload.totals) }
-      : prev
-  );
-};
+  const onTotals = async (payload?: { dayId?: string; totals?: any }) => {
+    if (payload?.dayId && payload?.totals) {
+      setDay(prev =>
+        prev && prev.id === payload.dayId
+          ? { ...prev, totals: normalizeTotals(payload.totals) }
+          : prev
+      );
+      return;
+    }
+    try {
+      if (!userId || !dayId) return;
+      const { data: d } = await supabase
+        .from('days')
+        .select('id, totals')
+        .eq('id', dayId)
+        .maybeSingle();
+      if (d) setDay(prev => (prev ? { ...prev, totals: normalizeTotals((d as any).totals) } : prev));
+    } catch {}
+  };
 
+  const unsubs = [
+    eventBus.on('day:totals', onTotals),
+    eventBus.on('meal:upsert', onTotals),
+    eventBus.on('meal:delete', onTotals),
+    eventBus.on('workout:upsert', onTotals),
+    eventBus.on('workout:delete', onTotals),
+  ];
+  return () => { unsubs.forEach(fn => { try { fn?.(); } catch {} }); };
+}, [userId, dayId]); // ← ensure this line exists (closing )])
 
-    const unsubs = [
-      eventBus.on('day:totals', onTotals),
-      eventBus.on('meal:upsert', onTotals),
-      eventBus.on('meal:delete', onTotals),
-      eventBus.on('workout:upsert', onTotals),
-      eventBus.on('workout:delete', onTotals),
-    ];
-    return () => { unsubs.forEach(fn => { try { fn?.(); } catch {} }); };
-  }, []);
 
   // Sync local currentGoal if parent changes
   useEffect(() => {
@@ -1408,15 +1480,69 @@ const line = typeof result === 'string'
     };
   }, [totalsFromMeals, previewMeal]);
 
+// Totals from workouts (persist until midnight or user deletes)
+const workoutAddedKcal = useMemo(
+  () => workouts.reduce((sum, w) => sum + (w.calories || 0), 0),
+  [workouts]
+);
+
+// Exercise preview (already computed elsewhere as previewWorkoutKcal)
+const totalExerciseKcal = Math.max(0, (workoutAddedKcal || 0)) + Math.max(0, (previewWorkoutKcal || 0));
+
+
+  
+
+
+
+
+
   // When logged out, show zeros everywhere
 const isAnon = !userId;
 
-const persistedAllowance  = isAnon ? 0 : (day?.totals?.allowance ?? (currentGoal?.calories || 0));
-const persistedRemaining  = isAnon ? 0 : (day?.totals?.remaining ?? (currentGoal?.calories || 0));
-const previewWorkoutDelta = isAnon ? 0 : (previewWorkoutKcal > 0 ? previewWorkoutKcal : 0);
+const baseTargetCals     = isAnon ? 0 : (currentGoal?.calories || 0);
+// Keep allowance client-correct: base target + *all* exercise kcal (logged + preview)
+const dailyAllowance     = Math.max(0, Math.round(baseTargetCals + totalExerciseKcal));
 
-const dailyAllowance    = Math.max(0, Math.round(persistedAllowance + previewWorkoutDelta));
-const remainingCalories = Math.round((persistedRemaining + previewWorkoutDelta) - (previewMeal?.calories || 0));
+const remainingCalories  = Math.max(
+  0,
+  Math.round(dailyAllowance - (totalsWithPreview.calories || 0))
+);
+
+
+// Distribute extra calories across macros using currentGoal ratios
+const tgP = Math.max(0, currentGoal?.protein || 0);
+const tgC = Math.max(0, currentGoal?.carbs   || 0);
+const tgF = Math.max(0, currentGoal?.fat     || 0);
+
+const baseMacroCals = tgP * 4 + tgC * 4 + tgF * 9;
+const rP = baseMacroCals > 0 ? (tgP * 4) / baseMacroCals : 0;
+const rC = baseMacroCals > 0 ? (tgC * 4) / baseMacroCals : 0;
+const rF = baseMacroCals > 0 ? (tgF * 9) / baseMacroCals : 0;
+
+const extraCalsForMacros = Math.max(0, totalExerciseKcal);
+
+// Convert the extra calories into grams, following your goal’s proportions
+const extraP = (extraCalsForMacros * rP) / 4;
+const extraC = (extraCalsForMacros * rC) / 4;
+const extraF = (extraCalsForMacros * rF) / 9;
+
+// Adjusted macro targets for today
+const adjTargetP = tgP + extraP;
+const adjTargetC = tgC + extraC;
+const adjTargetF = tgF + extraF;
+
+// What you’ve eaten so far (totalsWithPreview already includes meal previews)
+const eatenP = Math.max(0, totalsWithPreview.protein || 0);
+const eatenC = Math.max(0, totalsWithPreview.carbs   || 0);
+const eatenF = Math.max(0, totalsWithPreview.fat     || 0);
+
+// Grams remaining today (never below 0)
+const remainingP = Math.max(0, Math.round(adjTargetP - eatenP));
+const remainingC = Math.max(0, Math.round(adjTargetC - eatenC));
+const remainingF = Math.max(0, Math.round(adjTargetF - eatenF));
+
+
+
 
 
   // Scaled macro goals
@@ -1470,33 +1596,45 @@ const remainingCalories = Math.round((persistedRemaining + previewWorkoutDelta) 
   // ---- Actions ----
   async function addMealFromEstimate() {
     if (!mealText.trim() || !userId || !dayId) return;
-    setBusy(true);
-    try {
-      const res = await estimateMacrosForMeal(mealText.trim(), profile);
-      await upsertFoodEntry({
-        userId, dayId, name: mealText.trim(),
-        calories: Math.round(res.macros.calories || 0),
-        protein:  Math.round(res.macros.protein  || 0),
-        carbs:    Math.round(res.macros.carbs    || 0),
-        fat:      Math.round(res.macros.fat      || 0),
-        meta: { source: 'ai_estimate' },
-      });
-      await loadFoods(userId, dayKey);
-      setMealText(''); setPreviewMeal(null);
-      const { data: d } = await supabase
-  .from('days')
-  .select('id, totals')
-  .eq('id', dayId)
-  .maybeSingle();
+setBusy(true);
+try {
+  const res = await estimateMacrosForMeal(mealText.trim(), profile);
 
-if (d) {
-  setDay(prev => (prev ? { ...prev, totals: normalizeTotals((d as any).totals) } : prev));
+  await upsertFoodEntry({
+    userId, dayId, name: mealText.trim(),
+    calories: Math.round(res.macros.calories || 0),
+    protein:  Math.round(res.macros.protein  || 0),
+    carbs:    Math.round(res.macros.carbs    || 0),
+    fat:      Math.round(res.macros.fat      || 0),
+    meta: { source: 'ai_estimate' },
+  });
+
+  await loadFoods(userId, dayKey);
+  setMealText('');
+  setPreviewMeal(null);
+
+  // Recalc and broadcast so the pill updates
+  await recalcAndPersistDay(userId, localDateKey());
+  const { data: fresh } = await supabase
+    .from('days')
+    .select('id, totals')
+    .eq('id', dayId)
+    .maybeSingle();
+  if (fresh) {
+    const nt = normalizeTotals((fresh as any).totals);
+    setDay(prev => (prev ? { ...prev, totals: nt } : prev));
+    eventBus.emit('day:totals', { dayId, totals: nt });
+  }
+} catch (err) {
+  console.error('addMealFromEstimate failed', err);
+  // optional toast — adjust to your toast helper signature
+  showToast({ kind: 'error', message: 'Could not add estimated meal. Please try again.' });
+} finally {
+  setBusy(false);
+}
 }
 
-    } catch (e: any) {
-      openCoaching(e?.message || 'Could not estimate/add meal.');
-    } finally { setBusy(false); }
-  }
+
 
   // Remove a meal row and refresh today's totals
 async function deleteFoodLocal(id: string) {
@@ -1508,6 +1646,14 @@ async function deleteFoodLocal(id: string) {
 
     // refresh meals list
     await loadFoods(userId, dayKey);
+    // 🔁 Recompute totals so Remaining pill drops back
+      try {
+        await recalcAndPersistDay(userId, localDateKey());
+        eventBus.emit('meal:upsert');
+        eventBus.emit('day:totals');
+      } catch (e) {
+        console.warn('recalc after meal delete failed', e);
+      }
 
     // refresh day totals so allowance/remaining update
     const { data: d } = await supabase
@@ -1517,10 +1663,11 @@ async function deleteFoodLocal(id: string) {
       .maybeSingle();
 
     if (d) {
-      setDay(prev => (prev ? { ...prev, totals: (d as any).totals } : prev));
+      setDay(prev => (prev ? { ...prev, totals: normalizeTotals((d as any).totals) } : prev));
       try {
         // let other views react (if they listen)
-        eventBus.emit('day:totals', { dayId, totals: (d as any).totals });
+        eventBus.emit('day:totals', { dayId, totals: normalizeTotals((d as any).totals)
+ });
       } catch {}
     }
 
@@ -1560,7 +1707,7 @@ async function deleteFoodLocal(id: string) {
       .eq('id', realDayId)
       .maybeSingle();
 
-    if (d) setDay(prev => (prev ? { ...prev, totals: (d as any).totals } : prev));
+    if (d) setDay(prev => (prev ? { ...prev, totals: normalizeTotals((d as any).totals) } : prev));
   } catch (e: any) {
     openCoaching(e?.message || 'Could not estimate workout burn.');
   } finally {
@@ -1708,7 +1855,8 @@ async function saveEditWorkout() {
       await upsertWorkoutEntry({ userId, dayId, kind: title, calories: Math.max(0, Math.round(kcal || 0)), meta: { source: 'ai_suggestion' } });
       await loadWorkouts(userId, dayKey);
       const { data: d } = await supabase.from('days').select('id, totals').eq('id', dayId).maybeSingle();
-      if (d) setDay(prev => prev ? { ...prev, totals: (d as any).totals } : prev);
+      if (d) setDay(prev => prev ? { ...prev, totals: normalizeTotals((d as any).totals)
+ } : prev);
       showToast(`Added: ${title} (+${kcal} kcal)`); setSuggestOpen(false);
     } finally { setBusy(false); }
   }
@@ -1806,8 +1954,10 @@ async function saveEditWorkout() {
 <SummaryPill
   variant="exercise"
   label="Exercise added"
-  value={isAnon ? '0 kcal' : `${Math.round(day?.totals?.workoutCals ?? 0)} kcal`}
+  value={isAnon ? '0 kcal' : `${Math.round(workoutAddedKcal)} kcal`}
 />
+
+
 
 <SummaryPill
   variant="allowance"
@@ -1822,11 +1972,15 @@ async function saveEditWorkout() {
         {/* Macro meters */}
         {/* Macro meters */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-          <MacroMeter title="Calories" used={totalsWithPreview.calories} goal={dailyAllowance} unit="kcal" />
-          <MacroMeter title="Protein"  used={totalsWithPreview.protein}  goal={scaledProteinGoal}  unit="g" />
-          <MacroMeter title="Carbs"    used={totalsWithPreview.carbs}    goal={scaledCarbGoal}    unit="g" />
-          <MacroMeter title="Fat"      used={totalsWithPreview.fat}      goal={scaledFatGoal}      unit="g" />
+          {/* Exercise-aware allowance */}
+          <MacroMeter title="Calories" used={Math.max(0, totalsWithPreview.calories || 0)} goal={dailyAllowance} unit="kcal" />
+
+          {/* Exercise-aware macro targets */}
+          <MacroMeter title="Protein"  used={Math.max(0, totalsWithPreview.protein || 0)}  goal={adjTargetP} unit="g" />
+          <MacroMeter title="Carbs"    used={Math.max(0, totalsWithPreview.carbs   || 0)}  goal={adjTargetC} unit="g" />
+          <MacroMeter title="Fat"      used={Math.max(0, totalsWithPreview.fat     || 0)}  goal={adjTargetF} unit="g" />
         </div>
+
 
 
         {/* Food input */}
