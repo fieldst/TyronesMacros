@@ -1,8 +1,3 @@
-export const config = {
-  runtime: 'nodejs',          // keep serverless runtime
-  regions: ['sfo1', 'cle1']   // pin away from iad1
-};
-
 // api/generate.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import OpenAI from 'openai';

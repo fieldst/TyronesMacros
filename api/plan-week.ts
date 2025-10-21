@@ -1,8 +1,3 @@
-export const config = {
-  runtime: 'nodejs',          // keep serverless runtime
-  regions: ['sfo1', 'cle1']   // pin away from iad1
-};
-
 // api/plan-week.ts — Node serverless handler (default export) for Vercel
 // Compatible with WeeklyWorkoutPlan.tsx. Returns { success, data: { week, benefits } }.
 // Accepts both payload shapes: 
