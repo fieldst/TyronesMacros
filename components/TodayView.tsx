@@ -537,6 +537,30 @@ const toggleWorkout = (id: string) =>
 
   const showToast = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3200); };
 
+  // When logged out, clear volatile state so UI shows all zeros with the same layout
+useEffect(() => {
+  if (userId) return; // only run on logout / no user
+
+  try { localStorage.removeItem(SNAP_KEY); } catch {}
+
+  setDay(null);
+  setDayId(null);
+  setMeals([]);
+  setWorkouts([]);
+  setSavedMeals([]);
+
+  setMealText('');
+  setWorkoutText('');
+  setPreviewMeal(null);
+  setPreviewWorkoutKcal(0);
+
+  // zero targets/macros so meters/pills read 0
+  setCurrentGoal({ calories: 0, protein: 0, carbs: 0, fat: 0 });
+  setGoalLabel(null);
+  setGoalRationale(null);
+}, [userId]);
+
+
       // --- Weekly “retarget” reminder (once per day; uses profile.last_retarget_at) ---
   useEffect(() => {
     if (!userId) return;
@@ -732,8 +756,9 @@ const deriveKindLabel = (w: any) => {
 
 useEffect(() => {
   // Keep userId in sync with real-time auth changes (login/logout)
-  const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+   const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
     setUserId(session?.user?.id ?? null);
+    try { eventBus.emit('auth:changed'); } catch {}
   });
   return () => {
     // clean up the subscription on unmount
@@ -2063,22 +2088,23 @@ async function saveEditWorkout() {
         
         {/* Meals list — mobile-first cards */}
         <div className="space-y-2">
-          {meals.map((m) => (
-            <MealCard
-              key={m.id}
-              meal={{
-                id: m.id,
-                title: (m.meal_summary || m.name || '').toString(),
-                desc: (m.meal_summary || m.name || '')?.toString(),
-                calories: m.calories,
-                protein: m.protein,
-                carbs: m.carbs,
-                fat: m.fat,
-              }}
-              onSuggest={() => coachMealRow(m)}
-              onRemove={() => deleteFoodLocal(m.id)}
-            />
-          ))}
+          {(isAnon ? [] : meals).map((m) => (
+  <MealCard
+    key={m.id}
+    meal={{
+      id: m.id,
+      title: (m.meal_summary || m.name || '').toString(),
+      desc: (m.meal_summary || m.name || '')?.toString(),
+      calories: m.calories,
+      protein: m.protein,
+      carbs: m.carbs,
+      fat: m.fat,
+    }}
+    onSuggest={() => coachMealRow(m)}
+    onRemove={() => deleteFoodLocal(m.id)}
+  />
+))}
+
           <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3">
             <div className="flex items-center justify-between text-sm">
               <div className="font-semibold">Totals (meals)</div>
@@ -2100,19 +2126,19 @@ async function saveEditWorkout() {
         
         {/* Workouts list — mobile-first cards */}
           <div className="mt-4 space-y-2">
-  {workouts.map((w) => (
+  {(isAnon ? [] : workouts).map((w) => (
   <div key={w.id} className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-3">
     {/* clickable title with chevron */}
     <div className="flex items-center justify-between gap-2 flex-wrap">
-  {/* clickable title + badges */}
-  <button
-    type="button"
-    onClick={() => toggleWorkout(w.id)}
-    aria-expanded={!!expandedWorkouts[w.id]}
-    className="group font-medium text-left inline-flex items-center gap-2
-               hover:underline focus:outline-none focus:ring-2 focus:ring-purple-500/60
-               rounded-lg px-1 flex-1 min-w-0"
-    title="View workout details"
+      {/* clickable title + badges */}
+      <button
+        type="button"
+        onClick={() => toggleWorkout(w.id)}
+        aria-expanded={!!expandedWorkouts[w.id]}
+        className="group font-medium text-left inline-flex items-center gap-2
+                   hover:underline focus:outline-none focus:ring-2 focus:ring-purple-500/60
+                   rounded-lg px-1 flex-1 min-w-0"
+        title="View workout details"
   >
     <span
       className={`inline-block transition-transform duration-200 select-none ${
