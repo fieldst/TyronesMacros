@@ -38,6 +38,8 @@ type DaySnapshot = {
   updatedAt: number;
 };
 
+
+
 // --- normalize totals coming from DB/snapshot (snake_case -> camelCase) ---
 function normalizeTotals(t: any | null | undefined) {
   if (!t) return t;
@@ -109,6 +111,8 @@ function resolveDisplayNameFromAuth(user: any): string {
     (user?.email ? user.email.split('@')[0] : '');
   return (name ?? '').toString().trim();
 }
+
+
 
 /** Try DB table if it exists; otherwise use auth metadata (silent fail on 400/404). */
 async function fetchDisplayNameSafe(): Promise<string> {
@@ -1369,6 +1373,11 @@ const [editFat, setEditFat] = useState<number | ''>('');
         const uid = auth?.user?.id;
         if (!uid) return;
         const dayKey = localDateKey();
+         const hour = new Date().getHours();
+         const part =
+           hour < 12 ? 'morning' :
+           hour < 18 ? 'afternoon' :
+           hour < 22 ? 'evening' : 'night';
         const cacheKey = `dailyGreeting:${uid}:${dayKey}`;
           const cached = localStorage.getItem(cacheKey);
               if (cached && cached.trim()) {
@@ -1404,7 +1413,7 @@ const line = typeof result === 'string'
     }
     run();
     return () => { canceled = true; if (midnightTimer) window.clearTimeout(midnightTimer); };
-  }, [userName]);
+  }, [userName, greeting]);
 
   // Chicago midnight rollover
   const midnightTimer = useRef<number | null>(null);
