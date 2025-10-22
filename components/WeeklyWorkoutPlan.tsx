@@ -90,6 +90,39 @@ function loadLS<T>(key: string, fallback: T): T {
 
 type Move = { name: string; equip: 'barbell'|'dumbbell'|'kettlebell'|'cardio'|'bodyweight'; tags: string[] }
 
+// --- Map AI Coach text -> style + days/week (best-effort parsing) ---
+function mapCoachHeaderToStyle(header: string): string | null {
+  const h = (header || '').toLowerCase();
+  if (!h) return null;
+  if (h.includes('hybrid')) return 'hybrid';
+  if (h.includes('crossfit')) return 'crossfit';
+  if (h.includes('strength')) return 'strength';
+  if (h.includes('endurance')) return 'endurance';
+  if (h.includes('bodyweight')) return 'bodyweight';
+  return null;
+}
+
+function parseDaysFromCoachText(...chunks: (string | undefined)[]): number | null {
+  const txt = chunks.filter(Boolean).join(' ').toLowerCase();
+  if (!txt) return null;
+
+  // Case like: "4 lifting days + 2 short cardio sessions" -> 6
+  const nums = [...txt.matchAll(/(\d+)\s*(?:day|days)/g)].map(m => parseInt(m[1], 10));
+  if (nums.length >= 2) {
+    const sum = nums.reduce((a, b) => a + b, 0);
+    return Math.min(7, Math.max(1, sum));
+  }
+  if (nums.length === 1) {
+    return Math.min(7, Math.max(1, nums[0]));
+  }
+
+  // Fallback: look for "(\d+)\s*(?:x|sessions)" if days word not present
+  const first = txt.match(/(\d+)\s*(?:x|sessions?)/);
+  if (first) return Math.min(7, Math.max(1, parseInt(first[1], 10)));
+
+  return null;
+}
+
 /** Export to avoid noUnusedLocals build errors while keeping the dataset available */
 export const MOVES: Move[] = [
   { name: 'Back Squat', equip: 'barbell', tags: ['legs','squat','strength'] },
@@ -304,6 +337,8 @@ function rxForBar(movement: string, intensity: Intensity, cap?: number): string 
   if (cap) chosen = Math.min(chosen, cap)
   return `${chosen} lb`
 }
+
+
 
 /* ── Target → suggestion ───────────────────────────────────────────────────── */
 async function fetchCurrentTargetText(userId: string): Promise<string | null> {
@@ -725,42 +760,102 @@ export default function WeeklyWorkoutPlan() {
   }, [supabase, userId, meta.equipment]);
 
 
-  // NEW: persist just the free-text equipment so TodayView can use it for suggestions
-  useEffect(() => {
-    try {
-      localStorage.setItem('tm:plannedWeek_equipment_extra', JSON.stringify(meta.equipment || []));
-    } catch {}
-  }, [meta.equipment]);
+ // Suggest style/goal from Active Target (pre-fill only; never overwrite user choice)
+useEffect(() => {
+  (async () => {
+    // If user already has saved meta, don't change their choices
+    try { if (localStorage.getItem(LS_META)) return; } catch {}
 
-  // Suggest style/goal from Active Target
-  useEffect(() => {
-    (async () => {
-      const uid = await getCurrentUserId().catch(() => null)
-      if (!uid) return
-      const t = await fetchCurrentTargetText(uid)
-      const maybeStyle = workoutStyleSuggestion(t || '')
-      const sGoal = (t || '').toLowerCase()
-      const targGoal: Goal | null =
-        /(cut|deficit|shred)/.test(sGoal) ? 'cut' :
-        /(bulk|gain|surplus)/.test(sGoal) ? 'bulk' :
-        /(lean|recomp|maint)/.test(sGoal) ? 'recomp' : null
-      setMeta(m => ({ ...m, style: (maybeStyle as Style) || m.style, goal: targGoal ?? m.goal }))
-    })()
-  }, [])
+    const uid = await getCurrentUserId().catch(() => null);
+    if (!uid) return;
 
-  // Pull style from TargetsView cache (localStorage) if present, and map it
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem('aiCoachTargetsSuggestion'); // same key saved in TargetsView
-      if (!raw) return;
+    const t = await fetchCurrentTargetText(uid);
+    const maybeStyle = workoutStyleSuggestion(t || '');
+    const sGoal = (t || '').toLowerCase();
+    const targGoal: Goal | null =
+      /(cut|deficit|shred)/.test(sGoal) ? 'cut' :
+      /(bulk|gain|surplus)/.test(sGoal) ? 'bulk' :
+      /(lean|recomp|maint)/.test(sGoal) ? 'recomp' : null;
+
+    setMeta(m => ({
+      ...m,
+      // only fill if empty/unset
+      style: (!m.style || m.style === 'choose' || m.style === '') && maybeStyle
+        ? (maybeStyle as Style)
+        : m.style,
+      goal: m.goal ?? (targGoal ?? 'recomp'),
+    }));
+  })();
+}, []);
+
+
+ // Default Style + Days/Week from AI Coach when fields are empty (never overwrite user choice)
+useEffect(() => {
+  // Read the same object your TargetsView stores
+  let coach: any = null;
+  try {
+    const raw = localStorage.getItem('aiCoachTargetsSuggestion');
+    if (raw) {
       const parsed = JSON.parse(raw);
-      const sc = parsed?.styleCoach || parsed?.workoutStyle; // be flexible with field name
-      if (sc && (sc.header || (sc.bullets || []).length)) {
-        const mapped = mapCoachTextToStyle(sc.header || '', sc.bullets || []);
-        if (mapped) setMeta(m => ({ ...m, style: mapped }));
+      coach = parsed?.styleCoach || parsed?.workoutStyle || parsed;
+    }
+  } catch {}
+
+  if (!coach) return;
+
+  const header  = (coach?.header  || '').toString();
+  const bullets = Array.isArray(coach?.bullets) ? coach.bullets.map(String) : [];
+
+  // Prefer your existing mapper if present
+  let mappedStyle: string | null = null;
+  try { /* @ts-ignore */ mappedStyle = mapCoachTextToStyle ? mapCoachTextToStyle(header, bullets) : null; } catch {}
+  if (!mappedStyle) mappedStyle = mapCoachHeaderToStyle(header);
+
+  // Parse "4 lifting days + 2 short cardio sessions" → 6 (cap 1..7)
+  const joined = [header, bullets.join(' ')].join(' ').toLowerCase();
+  const nums = [...joined.matchAll(/(\d+)\s*(?:day|days|x|sessions?)/g)].map(m => parseInt(m[1], 10));
+  const aiDays = nums.length ? Math.min(7, Math.max(1, nums.length > 1 ? nums.reduce((a,b)=>a+b,0) : nums[0])) : null;
+
+  // Only fill blanks; if user already picked values, leave them alone
+  setMeta(m => ({
+    ...m,
+    style: (!m.style || m.style === 'choose' || m.style === '') && mappedStyle
+      ? (mappedStyle as any)
+      : m.style,
+    daysPerWeek: (!m.daysPerWeek || Number(m.daysPerWeek) <= 0) && typeof aiDays === 'number'
+      ? aiDays
+      : m.daysPerWeek,
+  }));
+}, []); // one-time; your existing saveLS(meta) preserves edits
+ 
+
+
+  // Pull style from TargetsView cache (pre-fill only; never overwrite user choice)
+useEffect(() => {
+  try {
+    // If user has saved meta already, don't change their choices
+    if (localStorage.getItem(LS_META)) return;
+
+    const raw = localStorage.getItem('aiCoachTargetsSuggestion');
+    if (!raw) return;
+
+    const parsed = JSON.parse(raw);
+    const sc = parsed?.styleCoach || parsed?.workoutStyle;
+    if (sc && (sc.header || (sc.bullets || []).length)) {
+      const mapped = mapCoachTextToStyle(sc.header || '', sc.bullets || []);
+      if (mapped) {
+        setMeta(m => ({
+          ...m,
+          // only fill if style is empty/unset
+          style: (!m.style || m.style === 'choose' || m.style === '')
+            ? mapped
+            : m.style,
+        }));
       }
-    } catch { /* ignore */ }
-  }, []);
+    }
+  } catch { /* ignore */ }
+}, []);
+
 
 
   useEffect(() => {
