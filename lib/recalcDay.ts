@@ -86,38 +86,61 @@ export async function recalcAndPersistDay(userId: string, dateKey: string): Prom
   ]);
 
   // Base target calories: prefer today's targets.calories; fallback to 0
-  const baseTarget =
-    (dayRow?.targets && Number(dayRow.targets.calories)) ||
-    0;
+  // Base target calories: prefer today's targets.calories; fallback to 0
+const baseTarget =
+  (dayRow?.targets && Number(dayRow.targets.calories)) ||
+  0;
 
-  const allowance = Math.max(0, baseTarget + workoutCals);
+// Prior totals (for lock behavior)
+const prior = (dayRow?.totals || {}) as Partial<DayTotals>;
 
-  // Prior totals (for lock behavior)
-  const prior = (dayRow?.totals || {}) as Partial<DayTotals>;
+// If the user has changed food/workout since last persist, unlock so remaining can move
+let locked_remaining = Boolean(prior.locked_remaining);
+if (
+  locked_remaining &&
+  (foodCals !== (prior.food_cals ?? 0) || workoutCals !== (prior.workout_cals ?? 0))
+) {
+  locked_remaining = false;
+}
 
-  let remaining = allowance - foodCals;
-  if (prior?.locked_remaining) {
-    if (typeof prior.remaining_override === 'number') {
-      remaining = prior.remaining_override;
-    } else if (typeof prior.remaining === 'number') {
-      remaining = prior.remaining;
-    }
+const allowance = Math.max(0, baseTarget + workoutCals);
+
+// Remaining logic:
+// - If locked and an override exists, use it.
+// - Else if locked and a prior remaining exists, use it.
+// - Else compute normally from current sums.
+let remaining: number;
+if (locked_remaining) {
+  if (typeof prior.remaining_override === 'number') {
+    remaining = prior.remaining_override;
+  } else if (typeof prior.remaining === 'number') {
+    remaining = prior.remaining;
+  } else {
+    remaining = Math.max(0, allowance - foodCals);
   }
+} else {
+  remaining = Math.max(0, allowance - foodCals);
+}
 
-  const totals: DayTotals = {
-    food_cals: foodCals,
-    workout_cals: workoutCals,
-    allowance,
-    remaining,
-    locked_remaining: Boolean(prior?.locked_remaining),
-    remaining_override: prior?.remaining_override ?? null,
+const totals: DayTotals = {
+  food_cals: foodCals,
+  workout_cals: workoutCals,
+  allowance,
+  remaining,
+  locked_remaining,
+  // If unlocked, clear override so it doesn't pin the value
+  remaining_override:
+    locked_remaining && typeof prior.remaining_override === 'number'
+      ? prior.remaining_override
+      : null,
 
-    // Keep any existing macros if present (don’t zero them)
-    protein: typeof prior?.protein === 'number' ? prior.protein : undefined,
-    carbs: typeof prior?.carbs === 'number' ? prior.carbs : undefined,
-    fat: typeof prior?.fat === 'number' ? prior.fat : undefined,
-  };
+  // Keep any existing macros if present (don’t zero them)
+  protein: typeof prior?.protein === 'number' ? prior.protein : undefined,
+  carbs: typeof prior?.carbs === 'number' ? prior.carbs : undefined,
+  fat: typeof prior?.fat === 'number' ? prior.fat : undefined,
+};
 
-  await upsertDayTotals(userId, dateKey, totals);
-  return totals;
+await upsertDayTotals(userId, dateKey, totals);
+return totals;
+
 }

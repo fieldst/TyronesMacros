@@ -1489,24 +1489,17 @@ const workoutAddedKcal = useMemo(
 // Exercise preview (already computed elsewhere as previewWorkoutKcal)
 const totalExerciseKcal = Math.max(0, (workoutAddedKcal || 0)) + Math.max(0, (previewWorkoutKcal || 0));
 
-
-  
-
-
-
-
-
-  // When logged out, show zeros everywhere
+// When logged out, show zeros everywhere
 const isAnon = !userId;
+// Prefer the Target you applied on the Targets page for *today*
+const resolvedTargetCals = isAnon
+  ? 0
+  : Number((day?.targets?.calories ?? currentGoal?.calories ?? 0));
 
-const baseTargetCals     = isAnon ? 0 : (currentGoal?.calories || 0);
-// Keep allowance client-correct: base target + *all* exercise kcal (logged + preview)
+// const baseTargetCals     = isAnon ? 0 : (currentGoal?.calories || 0);
+const baseTargetCals     = resolvedTargetCals;
 const dailyAllowance     = Math.max(0, Math.round(baseTargetCals + totalExerciseKcal));
-
-const remainingCalories  = Math.max(
-  0,
-  Math.round(dailyAllowance - (totalsWithPreview.calories || 0))
-);
+const remainingCalories  = Math.max(0, Math.round(dailyAllowance - (totalsWithPreview.calories || 0)));
 
 
 // Distribute extra calories across macros using currentGoal ratios
@@ -1545,19 +1538,25 @@ const remainingF = Math.max(0, Math.round(adjTargetF - eatenF));
 
 
 
-  // Scaled macro goals
-  const scaledProteinGoal = useMemo(() => {
-    const base = currentGoal?.protein || 0, baseCal = currentGoal?.calories || 0;
-    if (baseCal <= 0) return base; return Math.round(base * (dailyAllowance / baseCal));
-  }, [currentGoal, dailyAllowance]);
-  const scaledCarbGoal = useMemo(() => {
-    const base = currentGoal?.carbs || 0, baseCal = currentGoal?.calories || 0;
-    if (baseCal <= 0) return base; return Math.round(base * (dailyAllowance / baseCal));
-  }, [currentGoal, dailyAllowance]);
-  const scaledFatGoal = useMemo(() => {
-    const base = currentGoal?.fat || 0, baseCal = currentGoal?.calories || 0;
-    if (baseCal <= 0) return base; return Math.round(base * (dailyAllowance / baseCal));
-  }, [currentGoal, dailyAllowance]);
+  // BEFORE (uses currentGoal?.calories):
+// const base = currentGoal?.protein || 0, baseCal = currentGoal?.calories || 0;
+
+// AFTER (use the same resolved base used by the pills):
+const scaledProteinGoal = useMemo(() => {
+  const base = currentGoal?.protein || 0, baseCal = resolvedTargetCals;
+  if (baseCal <= 0) return base; return Math.round(base * (dailyAllowance / baseCal));
+}, [currentGoal, dailyAllowance, resolvedTargetCals]);
+
+const scaledCarbGoal = useMemo(() => {
+  const base = currentGoal?.carbs || 0, baseCal = resolvedTargetCals;
+  if (baseCal <= 0) return base; return Math.round(base * (dailyAllowance / baseCal));
+}, [currentGoal, dailyAllowance, resolvedTargetCals]);
+
+const scaledFatGoal = useMemo(() => {
+  const base = currentGoal?.fat || 0, baseCal = resolvedTargetCals;
+  if (baseCal <= 0) return base; return Math.round(base * (dailyAllowance / baseCal));
+}, [currentGoal, dailyAllowance, resolvedTargetCals]);
+
 
   const remainingProtein = Math.max(0, scaledProteinGoal - totalsWithPreview.protein);
   const remainingCarbs   = Math.max(0, scaledCarbGoal   - totalsWithPreview.carbs);
